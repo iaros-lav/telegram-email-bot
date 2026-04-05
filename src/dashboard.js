@@ -102,6 +102,11 @@ async function handleRequest(
       return;
     }
 
+    if (request.method === "GET" && normalizedPath === "/privacy") {
+      respondHtml(response, renderPrivacyPage());
+      return;
+    }
+
     if (request.method === "POST" && normalizedPath === "/api/mini-app/submit") {
       await handleMiniAppSubmit(request, response, db, botToken, initDataTtlSeconds, onEmailCaptured);
       return;
@@ -406,6 +411,15 @@ function renderMiniApp() {
         border-radius: 16px;
         display: none;
       }
+      .success-panel {
+        display: none;
+        margin-top: 18px;
+        padding: 16px;
+        border-radius: 20px;
+        background: rgba(35, 100, 59, 0.08);
+        color: var(--success);
+      }
+      .success-panel.show { display: block; }
       .message.show { display: block; }
       .message.success { background: rgba(35, 100, 59, 0.1); color: var(--success); }
       .message.error { background: rgba(178, 58, 43, 0.1); color: var(--danger); }
@@ -421,7 +435,11 @@ function renderMiniApp() {
           <input id="email" name="email" type="email" autocomplete="email" placeholder="name@example.com" required>
           <button type="submit">Save Email</button>
         </form>
-        <p class="note">By submitting, you agree that the channel owner may store your email for contact or newsletter purposes.</p>
+        <p id="note" class="note">By submitting, you agree that the channel owner may store your email for contact or newsletter purposes.</p>
+        <section id="success-panel" class="success-panel">
+          <strong>You’re on the list.</strong>
+          <p>You can close this window now. If you ever want to remove your data, send <strong>/delete</strong> to the bot.</p>
+        </section>
         <div id="message" class="message"></div>
       </section>
     </main>
@@ -434,11 +452,14 @@ function renderMiniApp() {
 
       const form = document.getElementById("signup-form");
       const message = document.getElementById("message");
+      const note = document.getElementById("note");
+      const successPanel = document.getElementById("success-panel");
+      const emailInput = document.getElementById("email");
 
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
 
-        const email = document.getElementById("email").value.trim();
+        const email = emailInput.value.trim();
         const initData = webApp?.initData || "";
 
         if (!initData) {
@@ -453,7 +474,8 @@ function renderMiniApp() {
             body: JSON.stringify({
               email,
               init_data: initData,
-              user: webApp?.initDataUnsafe?.user || null
+              user: webApp?.initDataUnsafe?.user || null,
+              source: webApp?.initDataUnsafe?.start_param || null
             })
           });
 
@@ -462,21 +484,93 @@ function renderMiniApp() {
             throw new Error(payload.error || "Could not save your email.");
           }
 
-          showMessage("Your email is saved. You can close this window now.", "success");
+          showSuccess();
           if (webApp) {
-            webApp.MainButton.setText("Saved");
+            webApp.MainButton.setText("Close");
             webApp.MainButton.show();
+            webApp.onEvent("mainButtonClicked", () => webApp.close());
           }
         } catch (error) {
           showMessage(error.message, "error");
         }
       });
 
+      function showSuccess() {
+        message.className = "message";
+        form.style.display = "none";
+        note.style.display = "none";
+        successPanel.classList.add("show");
+      }
+
       function showMessage(text, kind) {
         message.textContent = text;
         message.className = "message show " + kind;
       }
     </script>
+  </body>
+</html>`;
+}
+
+function renderPrivacyPage() {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Privacy Policy</title>
+    <style>
+      :root {
+        --bg: #fbf6ef;
+        --panel: #fffdf9;
+        --ink: #231b16;
+        --muted: #675c54;
+        --line: rgba(35, 27, 22, 0.1);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Georgia, "Iowan Old Style", serif;
+        color: var(--ink);
+        background: linear-gradient(180deg, #fffaf4, var(--bg));
+      }
+      main {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 32px 20px 60px;
+      }
+      article {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        padding: 28px;
+      }
+      h1 {
+        margin-top: 0;
+        font-size: clamp(2rem, 6vw, 3.2rem);
+        line-height: 0.95;
+      }
+      p, li {
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      ul {
+        padding-left: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <article>
+        <h1>Privacy</h1>
+        <p>This bot collects a Telegram user ID, basic public profile fields, signup source, and one current email address so the channel owner can manage newsletter signups.</p>
+        <p>If EmailOctopus is enabled, the submitted email is also sent to EmailOctopus for mailing-list delivery.</p>
+        <ul>
+          <li>Your email is used for channel updates, announcements, and occasional newsletter messages.</li>
+          <li>You can remove your saved local data at any time by sending <strong>/delete</strong> to the bot.</li>
+          <li>You can update your email at any time by sending <strong>/start</strong> and submitting a new one.</li>
+        </ul>
+      </article>
+    </main>
   </body>
 </html>`;
 }
@@ -543,6 +637,7 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
     const telegramId = String(user.id);
     const existing = await db.getUser(telegramId);
     const now = new Date().toISOString();
+    const source = String(payload.source || existing?.source || "mini_app");
 
     await db.upsertUser(telegramId, {
       telegram_id: telegramId,
@@ -550,7 +645,7 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
       first_name: String(user.first_name || existing?.first_name || ""),
       last_name: String(user.last_name || existing?.last_name || ""),
       email,
-      source: String(existing?.source || "mini_app"),
+      source,
       state: "complete",
       created_at: existing?.created_at || now,
       updated_at: now
@@ -559,7 +654,9 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
     const syncResult = await onEmailCaptured({
       email,
       firstName: String(user.first_name || existing?.first_name || ""),
-      lastName: String(user.last_name || existing?.last_name || "")
+      lastName: String(user.last_name || existing?.last_name || ""),
+      source,
+      method: "mini_app"
     });
 
     if (!syncResult.ok) {
@@ -578,6 +675,7 @@ function isPublicRoute(method, pathname) {
   return (
     (method === "GET" && normalizedPath === "/health") ||
     (method === "GET" && normalizedPath === "/mini-app") ||
+    (method === "GET" && normalizedPath === "/privacy") ||
     (method === "POST" && normalizedPath === "/api/mini-app/submit")
   );
 }

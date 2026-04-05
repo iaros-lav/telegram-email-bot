@@ -19,6 +19,9 @@ Bots cannot automatically message every subscriber in a channel or see a full su
 - Source tracking using the `/start` payload
 - Local admin dashboard with CSV download
 - Telegram Mini App email form
+- Privacy and delete-data commands
+- Admin stats and promo commands
+- EmailOctopus sync for successful signups
 - Admin-only `/export` command that points you to the dashboard
 - No external npm dependencies
 
@@ -86,6 +89,11 @@ That `channel` payload is stored as `source` in the database, so you can tell wh
 
 - `/start` starts or restarts the signup flow
 - `/help` shows help
+- `/privacy` explains how data is used
+- `/delete` deletes the user’s saved local signup data
+- `/stats` shows admin signup stats
+- `/count` shows admin email count
+- `/promo [source]` generates admin channel post copy with a tracked signup link
 - `/export` replies with your local dashboard link if `ADMIN_CHAT_ID` matches
 
 ## Dashboard
@@ -110,6 +118,8 @@ That `channel` payload is stored as `source` in the database, so you can tell wh
 - The bot only shows the Web App button when `PUBLIC_BASE_URL` is set.
 - For real Telegram use, the URL must be publicly reachable over HTTPS.
 - The plain text email flow still works as a fallback.
+- The success state now hides the form and confirms the signup inside Telegram.
+- The current production setup trusts Telegram Mini App user data from inside Telegram rather than enforcing strict server-side signature validation.
 
 ## EmailOctopus
 
@@ -118,8 +128,15 @@ That `channel` payload is stored as `source` in the database, so you can tell wh
 - `EMAILOCTOPUS_STATUS` defaults to `SUBSCRIBED`.
 - `EMAILOCTOPUS_TAGS` accepts comma-separated tags such as `telegram,channel`.
 - Existing contacts are updated using EmailOctopus's list contact update endpoint keyed by the MD5 hash of the lowercase email address.
-- Server-side validation now uses `Telegram.WebApp.initData`, not `initDataUnsafe`.
-- `INIT_DATA_TTL_SECONDS` controls how long Telegram auth data stays valid.
+- The bot also adds dynamic tags such as `source-channel` or `method-mini_app`.
+- `/delete` attempts to unsubscribe the stored email from EmailOctopus before removing local data.
+
+## Privacy
+
+- A public privacy page is available at `/privacy`.
+- The bot stores one current email per Telegram user, not a full history of every email they tried.
+- Sending a new email from the same Telegram account updates that one record.
+- Use `/delete` to remove the saved local record.
 
 ## Telegram Delivery Mode
 

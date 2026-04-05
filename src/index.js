@@ -22,6 +22,8 @@ const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "";
 const INIT_DATA_TTL_SECONDS = Number(process.env.INIT_DATA_TTL_SECONDS || 3600);
 const TELEGRAM_WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || crypto.randomUUID();
 const TELEGRAM_WEBHOOK_PATH = `/telegram/webhook/${TELEGRAM_WEBHOOK_SECRET}`;
+const SITE_URL = PUBLIC_BASE_URL ? PUBLIC_BASE_URL.replace(/\/$/, "") : "";
+const PRIVACY_URL = SITE_URL ? `${SITE_URL}/privacy` : "";
 
 if (!BOT_TOKEN) {
   console.error("Missing BOT_TOKEN in environment.");
@@ -78,7 +80,7 @@ async function startBot(db, emailOctopus) {
 
   while (true) {
     try {
-        const updates = await api("getUpdates", {
+      const updates = await api("getUpdates", {
         offset: lastUpdateId + 1,
         timeout: 30,
         allowed_updates: ["message"]
@@ -118,28 +120,59 @@ async function handleUpdate(update, db, emailOctopus) {
     return;
   }
 
-  if (text.startsWith("/start")) {
-    await handleStart(message, db);
+  const command = parseCommand(text);
+  if (command?.name === "/start") {
+    await handleStart(message, db, command.args);
     return;
   }
 
-  if (text === "/help") {
+  if (command?.name === "/help") {
     await sendHelp(message.chat.id);
     return;
   }
 
-  if (text === "/export") {
+  if (command?.name === "/export") {
     await handleExport(message.chat.id, db);
+    return;
+  }
+
+  if (command?.name === "/stats") {
+    await handleStats(message.chat.id, db);
+    return;
+  }
+
+  if (command?.name === "/count") {
+    await handleCount(message.chat.id, db);
+    return;
+  }
+
+  if (command?.name === "/delete") {
+    await handleDelete(message, db, emailOctopus);
+    return;
+  }
+
+  if (command?.name === "/privacy") {
+    await handlePrivacy(message.chat.id);
+    return;
+  }
+
+  if (command?.name === "/promo") {
+    await handlePromo(message.chat.id, command.args);
+    return;
+  }
+
+  if (command && command.name.startsWith("/")) {
+    await sendMessage(message.chat.id, "I don't know that command. Use /help to see what I can do.");
     return;
   }
 
   await handleText(message, db, emailOctopus);
 }
 
-async function handleStart(message, db) {
+async function handleStart(message, db, startPayload = "") {
   const userId = String(message.from.id);
   const record = await db.getUser(userId);
-  const source = getStartPayload(message.text || "");
+  const source = resolveSource(record, startPayload || getStartPayload(message.text || ""));
 
   await db.upsertUser(userId, {
     telegram_id: message.from.id,
@@ -153,31 +186,32 @@ async function handleStart(message, db) {
     created_at: record?.created_at || nowIso()
   });
 
-  const channelHint = BOT_USERNAME
-    ? `Channel signup link: https://t.me/${BOT_USERNAME}?start=channel`
-    : "Set BOT_USERNAME in your .env so the channel signup link can be shown here.";
-
   const lines = [
-    "Welcome. I can register your email for updates.",
+    "Thanks for being here.",
     "",
-    "Please reply with your email address."
+    "I can save one email address for updates from the channel.",
+    "",
+    "Reply with your best email address."
   ];
 
   if (PUBLIC_BASE_URL) {
     lines.push("", "If you prefer, tap the button below for a cleaner signup form.");
   }
 
+  lines.push(
+    "",
+    "What you’ll get: important posts, announcements, and occasional newsletter updates.",
+    "",
+    "You can remove your data anytime with /delete."
+  );
+
+  if (PRIVACY_URL) {
+    lines.push(`Privacy: ${PRIVACY_URL}`);
+  }
+
   await sendMessage(
     message.chat.id,
-    [
-      ...lines,
-      "",
-      "By sending it, you agree that the channel owner may store it for contact or newsletter purposes.",
-      "",
-      "Example: name@example.com",
-      "",
-      channelHint
-    ].join("\n"),
+    [...lines, "", "Example: name@example.com"].join("\n"),
     PUBLIC_BASE_URL ? {
       reply_markup: {
         inline_keyboard: [[{
@@ -216,19 +250,21 @@ async function handleText(message, db, emailOctopus) {
   const syncResult = await syncToEmailOctopus(emailOctopus, {
     email,
     firstName: record.first_name,
-    lastName: record.last_name
+    lastName: record.last_name,
+    source: record.source,
+    method: "chat"
   });
 
   await sendMessage(
     message.chat.id,
     syncResult.ok
       ? "Thanks. Your email has been saved. Send /start anytime if you want to update it."
-      : "Thanks. Your email was saved locally, but the mailing-list sync failed. Please try again in a moment."
+      : `Thanks. Your email was saved locally, but the mailing-list sync failed. ${syncResult.message || "Please try again in a moment."}`
   );
 }
 
 async function handleExport(chatId, db) {
-  if (!ADMIN_CHAT_ID || String(chatId) !== String(ADMIN_CHAT_ID)) {
+  if (!isAdminChat(chatId)) {
     await sendMessage(chatId, "You are not allowed to export the email list.");
     return;
   }
@@ -239,7 +275,9 @@ async function handleExport(chatId, db) {
     return;
   }
 
-  const dashboardUrl = `http://${DASHBOARD_HOST}:${DASHBOARD_PORT}/?token=${encodeURIComponent(DASHBOARD_TOKEN)}`;
+  const dashboardUrl = SITE_URL
+    ? `${SITE_URL}/?token=${encodeURIComponent(DASHBOARD_TOKEN)}`
+    : `http://${DASHBOARD_HOST}:${DASHBOARD_PORT}/?token=${encodeURIComponent(DASHBOARD_TOKEN)}`;
   await sendMessage(
     chatId,
     DASHBOARD_ENABLED
@@ -248,12 +286,128 @@ async function handleExport(chatId, db) {
   );
 }
 
+async function handleStats(chatId, db) {
+  if (!isAdminChat(chatId)) {
+    await sendMessage(chatId, "You are not allowed to view signup stats.");
+    return;
+  }
+
+  const users = await db.listUsers();
+  const withEmail = users.filter((user) => user.email);
+  const sourceCounts = countBySource(withEmail);
+  const sourceLines = Object.entries(sourceCounts)
+    .sort((left, right) => right[1] - left[1])
+    .map(([source, count]) => `${source}: ${count}`);
+
+  const latestUser = withEmail[0];
+  await sendMessage(
+    chatId,
+    [
+      `Total users seen: ${users.length}`,
+      `Saved emails: ${withEmail.length}`,
+      latestUser ? `Latest signup: ${latestUser.email} (${latestUser.source || "direct"})` : "Latest signup: none yet",
+      "",
+      "Sources:",
+      ...(sourceLines.length > 0 ? sourceLines : ["No source data yet."])
+    ].join("\n")
+  );
+}
+
+async function handleCount(chatId, db) {
+  if (!isAdminChat(chatId)) {
+    await sendMessage(chatId, "You are not allowed to view signup counts.");
+    return;
+  }
+
+  const users = await db.listUsers();
+  const withEmail = users.filter((user) => user.email);
+  await sendMessage(chatId, `Saved emails: ${withEmail.length}`);
+}
+
+async function handleDelete(message, db, emailOctopus) {
+  const userId = String(message.from.id);
+  const record = await db.getUser(userId);
+
+  if (!record) {
+    await sendMessage(message.chat.id, "I don't have any saved data for this chat.");
+    return;
+  }
+
+  let unsubscribeResult = { ok: true, skipped: true };
+  if (record.email) {
+    unsubscribeResult = await unsubscribeFromEmailOctopus(emailOctopus, {
+      email: record.email,
+      firstName: record.first_name,
+      lastName: record.last_name,
+      source: record.source,
+      method: "chat"
+    });
+  }
+
+  await db.deleteUser(userId);
+
+  await sendMessage(
+    message.chat.id,
+    unsubscribeResult.ok
+      ? "Your saved email and local signup data have been deleted. You can use /start anytime to sign up again."
+      : `Your local signup data was deleted, but the mailing-list unsubscribe failed. ${unsubscribeResult.message || "Please check EmailOctopus manually."}`
+  );
+}
+
+async function handlePrivacy(chatId) {
+  const lines = [
+    "Privacy summary:",
+    "I store your Telegram ID, basic profile fields, signup source, and your current email address.",
+    "That data is used to manage channel email signups.",
+    "If EmailOctopus is enabled, your email is also sent there for newsletter delivery.",
+    "Use /delete anytime to remove your saved local data."
+  ];
+
+  if (PRIVACY_URL) {
+    lines.push(`Full privacy page: ${PRIVACY_URL}`);
+  }
+
+  await sendMessage(chatId, lines.join("\n"));
+}
+
+async function handlePromo(chatId, args) {
+  if (!isAdminChat(chatId)) {
+    await sendMessage(chatId, "You are not allowed to generate promo copy.");
+    return;
+  }
+
+  if (!BOT_USERNAME) {
+    await sendMessage(chatId, "Set BOT_USERNAME first so I can generate a channel signup link.");
+    return;
+  }
+
+  const source = args ? sanitizeStartPayload(args) : "channel";
+  const signupLink = `https://t.me/${BOT_USERNAME}?start=${source}`;
+  const promo = [
+    "Stay in touch with Немного Нервно.",
+    "Get important posts, announcements, and occasional newsletter updates by email.",
+    "",
+    `Sign up here: ${signupLink}`
+  ];
+
+  if (PRIVACY_URL) {
+    promo.push(`Privacy: ${PRIVACY_URL}`);
+  }
+
+  await sendMessage(chatId, promo.join("\n"));
+}
+
 async function sendHelp(chatId) {
   await sendMessage(
     chatId,
     [
       "/start - start or restart email collection",
       "/help - show help",
+      "/privacy - how your data is used",
+      "/delete - delete your saved local data",
+      "/stats - admin signup stats",
+      "/count - admin email count",
+      "/promo [source] - admin channel post copy with tracking link",
       "/export - admin-only dashboard link",
       PUBLIC_BASE_URL ? "Mini App is enabled for one-tap signup." : "Set PUBLIC_BASE_URL to enable the Mini App button."
     ].join("\n")
@@ -263,6 +417,37 @@ async function sendHelp(chatId) {
 function getStartPayload(text) {
   const payload = text.split(/\s+/, 2)[1];
   return payload || "direct";
+}
+
+function resolveSource(record, payload) {
+  const nextSource = sanitizeStartPayload(payload || "direct");
+  if (nextSource && nextSource !== "direct") {
+    return nextSource;
+  }
+
+  return record?.source || "direct";
+}
+
+function parseCommand(text) {
+  if (!text.startsWith("/")) {
+    return null;
+  }
+
+  const [rawCommand, ...rest] = text.split(/\s+/);
+  const normalizedName = rawCommand.split("@")[0].toLowerCase();
+  return {
+    name: normalizedName,
+    args: rest.join(" ").trim()
+  };
+}
+
+function sanitizeStartPayload(value) {
+  const source = String(value || "direct").trim().toLowerCase();
+  if (!source) {
+    return "direct";
+  }
+
+  return source.replace(/[^a-z0-9_-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "direct";
 }
 
 function normalizeEmail(value) {
@@ -346,6 +531,32 @@ async function syncToEmailOctopus(client, contact) {
   }
 
   return result;
+}
+
+async function unsubscribeFromEmailOctopus(client, contact) {
+  if (!client) {
+    return { ok: true, skipped: true };
+  }
+
+  const result = await client.unsubscribeContact(contact);
+  if (!result.ok) {
+    console.error("EmailOctopus unsubscribe failed:", result.error?.code || result.status || "UNKNOWN");
+  }
+
+  return result;
+}
+
+function countBySource(users) {
+  const counts = {};
+  for (const user of users) {
+    const source = user.source || "direct";
+    counts[source] = (counts[source] || 0) + 1;
+  }
+  return counts;
+}
+
+function isAdminChat(chatId) {
+  return Boolean(ADMIN_CHAT_ID) && String(chatId) === String(ADMIN_CHAT_ID);
 }
 
 function loadEnvFile() {

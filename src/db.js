@@ -116,6 +116,14 @@ function createSqliteStore(filePath) {
     async listUsers() {
       return listUsersStatement.all();
     },
+    async deleteUser(userId) {
+      const deleteStatement = database.prepare(`
+        DELETE FROM users
+        WHERE telegram_id = ?
+      `);
+      deleteStatement.run(String(userId));
+      return true;
+    },
     async getStats() {
       const row = statsStatement.get();
       return {
@@ -235,6 +243,16 @@ async function createPostgresStore(databaseUrl) {
         ORDER BY updated_at DESC
       `);
       return result.rows.map(normalizePostgresUser);
+    },
+    async deleteUser(userId) {
+      await client.query(
+        `
+          DELETE FROM users
+          WHERE telegram_id = $1
+        `,
+        [String(userId)]
+      );
+      return true;
     },
     async getStats() {
       const result = await client.query(`
