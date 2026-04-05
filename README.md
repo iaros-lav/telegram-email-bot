@@ -41,6 +41,7 @@ DASHBOARD_PORT=3000
 DASHBOARD_TOKEN=replace-with-a-secret-token
 PUBLIC_BASE_URL=https://your-public-domain.example
 INIT_DATA_TTL_SECONDS=3600
+TELEGRAM_WEBHOOK_SECRET=replace-with-a-long-random-secret
 ```
 
 If `DATABASE_URL` is set, the app uses Postgres. If it is empty, it falls back to SQLite in `DATABASE_FILE`.
@@ -64,6 +65,7 @@ PUBLIC_BASE_URL=https://your-public-domain.example
 ```
 
 The bot will then show an `Open Email Form` button in private chat that loads `/mini-app`.
+When `PUBLIC_BASE_URL` is set, the bot also switches to Telegram webhook mode automatically, which is the correct setup for Render.
 
 ## Channel post example
 
@@ -106,6 +108,13 @@ That `channel` payload is stored as `source` in the database, so you can tell wh
 - Server-side validation now uses `Telegram.WebApp.initData`, not `initDataUnsafe`.
 - `INIT_DATA_TTL_SECONDS` controls how long Telegram auth data stays valid.
 
+## Telegram Delivery Mode
+
+- Local development without `PUBLIC_BASE_URL` uses long polling.
+- Deployment with `PUBLIC_BASE_URL` uses webhook mode automatically.
+- Render should use webhook mode to avoid `Telegram HTTP 409` conflicts during overlapping deploys.
+- `TELEGRAM_WEBHOOK_SECRET` protects the webhook path with an unguessable URL segment.
+
 ## Deploying
 
 This project includes a [`Dockerfile`](/Users/yarik/Code/telegram-email-bot/Dockerfile) so you can deploy it on any platform that supports Docker.
@@ -114,6 +123,7 @@ It also includes a Render Blueprint at [`render.yaml`](/Users/yarik/Code/telegra
 ### Required deployment settings
 
 - Set `PUBLIC_BASE_URL` to your live HTTPS URL.
+- Set `TELEGRAM_WEBHOOK_SECRET` to a long random string.
 - Set `DASHBOARD_HOST=0.0.0.0` in cloud environments.
 - Most platforms provide `PORT`; the app uses it automatically when present.
 - Prefer `DATABASE_URL` on cloud platforms so your data survives restarts automatically.

@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { createStore } from "./db.js";
@@ -18,6 +19,8 @@ const DASHBOARD_PORT = Number(process.env.PORT || process.env.DASHBOARD_PORT || 
 const DASHBOARD_TOKEN = process.env.DASHBOARD_TOKEN || "change-me";
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "";
 const INIT_DATA_TTL_SECONDS = Number(process.env.INIT_DATA_TTL_SECONDS || 3600);
+const TELEGRAM_WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || crypto.randomUUID();
+const TELEGRAM_WEBHOOK_PATH = `/telegram/webhook/${TELEGRAM_WEBHOOK_SECRET}`;
 
 if (!BOT_TOKEN) {
   console.error("Missing BOT_TOKEN in environment.");
@@ -46,7 +49,11 @@ async function main() {
       port: DASHBOARD_PORT,
       token: DASHBOARD_TOKEN,
       exportDir: EXPORT_DIR,
-      initDataTtlSeconds: INIT_DATA_TTL_SECONDS
+      initDataTtlSeconds: INIT_DATA_TTL_SECONDS,
+      telegramWebhookPath: TELEGRAM_WEBHOOK_PATH,
+      onTelegramUpdate: async (update) => {
+        await handleUpdate(update, db);
+      }
     });
   }
 
@@ -55,6 +62,13 @@ async function main() {
 
 async function startBot(db) {
   console.log("Bot is starting...");
+
+  if (PUBLIC_BASE_URL) {
+    await ensureWebhookMode();
+    console.log(`Telegram webhook mode enabled at ${PUBLIC_BASE_URL.replace(/\/$/, "")}${TELEGRAM_WEBHOOK_PATH}`);
+    return;
+  }
+
   await ensureLongPollingMode();
 
   while (true) {
@@ -290,6 +304,21 @@ async function ensureLongPollingMode() {
     });
   } catch (error) {
     console.error("Could not clear webhook before long polling:", error.message);
+  }
+}
+
+async function ensureWebhookMode() {
+  const webhookUrl = `${PUBLIC_BASE_URL.replace(/\/$/, "")}${TELEGRAM_WEBHOOK_PATH}`;
+
+  try {
+    await api("setWebhook", {
+      url: webhookUrl,
+      allowed_updates: ["message"],
+      drop_pending_updates: false
+    });
+  } catch (error) {
+    console.error("Could not set Telegram webhook:", error.message);
+    throw error;
   }
 }
 

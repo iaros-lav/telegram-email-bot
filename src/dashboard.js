@@ -5,14 +5,26 @@ import crypto from "node:crypto";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-export function startDashboard({ db, botToken, host, port, token, exportDir, initDataTtlSeconds }) {
+export function startDashboard({
+  db,
+  botToken,
+  host,
+  port,
+  token,
+  exportDir,
+  initDataTtlSeconds,
+  telegramWebhookPath,
+  onTelegramUpdate
+}) {
   const server = createServer((request, response) => {
     void handleRequest(request, response, {
       db,
       botToken,
       token,
       exportDir,
-      initDataTtlSeconds
+      initDataTtlSeconds,
+      telegramWebhookPath,
+      onTelegramUpdate
     });
   });
 
@@ -27,10 +39,21 @@ export function startDashboard({ db, botToken, host, port, token, exportDir, ini
   return server;
 }
 
-async function handleRequest(request, response, { db, botToken, token, exportDir, initDataTtlSeconds }) {
+async function handleRequest(
+  request,
+  response,
+  { db, botToken, token, exportDir, initDataTtlSeconds, telegramWebhookPath, onTelegramUpdate }
+) {
   try {
     const requestUrl = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
     const routeIsPublic = isPublicRoute(request.method, requestUrl.pathname);
+
+    if (request.method === "POST" && requestUrl.pathname === telegramWebhookPath) {
+      const update = await readJsonBody(request);
+      await onTelegramUpdate(update);
+      respondJson(response, 200, { ok: true });
+      return;
+    }
 
     if (!routeIsPublic && !isAuthorized(requestUrl, token)) {
       respondText(response, 401, "Unauthorized dashboard request.");
@@ -69,7 +92,7 @@ async function handleRequest(request, response, { db, botToken, token, exportDir
     }
 
     if (request.method === "POST" && requestUrl.pathname === "/api/mini-app/submit") {
-      void handleMiniAppSubmit(request, response, db, botToken, initDataTtlSeconds);
+      await handleMiniAppSubmit(request, response, db, botToken, initDataTtlSeconds);
       return;
     }
 
@@ -83,6 +106,30 @@ async function handleRequest(request, response, { db, botToken, token, exportDir
     console.error("Dashboard request failed:", error);
     respondText(response, 500, "Internal server error.");
   }
+}
+
+export async function readJsonBody(request) {
+  let rawBody = "";
+
+  return new Promise((resolve, reject) => {
+    request.on("data", (chunk) => {
+      rawBody += chunk;
+      if (rawBody.length > 1_000_000) {
+        reject(new Error("Request body is too large."));
+        request.destroy();
+      }
+    });
+
+    request.on("end", () => {
+      try {
+        resolve(JSON.parse(rawBody || "{}"));
+      } catch {
+        reject(new Error("Invalid request body."));
+      }
+    });
+
+    request.on("error", reject);
+  });
 }
 
 async function renderDashboard(db, token) {
@@ -465,59 +512,48 @@ function displayName(user) {
   return [user.first_name, user.last_name].filter(Boolean).join(" ");
 }
 
-function handleMiniAppSubmit(request, response, db, botToken, initDataTtlSeconds) {
-  let rawBody = "";
+async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlSeconds) {
+  try {
+    const payload = await readJsonBody(request);
+    const email = String(payload.email || "").trim().toLowerCase();
+    const initData = String(payload.init_data || "");
 
-  request.on("data", (chunk) => {
-    rawBody += chunk;
-    if (rawBody.length > 100_000) {
-      request.destroy();
+    if (!initData) {
+      respondJson(response, 400, { error: "Missing Telegram init data." });
+      return;
     }
-  });
 
-  request.on("end", async () => {
-    try {
-      const payload = JSON.parse(rawBody || "{}");
-      const email = String(payload.email || "").trim().toLowerCase();
-      const initData = String(payload.init_data || "");
-
-      if (!initData) {
-        respondJson(response, 400, { error: "Missing Telegram init data." });
-        return;
-      }
-
-      if (!EMAIL_REGEX.test(email)) {
-        respondJson(response, 400, { error: "Please enter a valid email address." });
-        return;
-      }
-
-      const verified = verifyTelegramInitData(initData, botToken, initDataTtlSeconds);
-      if (!verified.ok) {
-        respondJson(response, 401, { error: verified.error });
-        return;
-      }
-
-      const telegramId = String(verified.user.id);
-      const existing = await db.getUser(telegramId);
-      const now = new Date().toISOString();
-
-      await db.upsertUser(telegramId, {
-        telegram_id: telegramId,
-        username: String(verified.user.username || existing?.username || ""),
-        first_name: String(verified.user.first_name || existing?.first_name || ""),
-        last_name: String(verified.user.last_name || existing?.last_name || ""),
-        email,
-        source: String(verified.start_param || existing?.source || "mini_app"),
-        state: "complete",
-        created_at: existing?.created_at || now,
-        updated_at: now
-      });
-
-      respondJson(response, 200, { ok: true });
-    } catch (error) {
-      respondJson(response, 400, { error: "Invalid request body." });
+    if (!EMAIL_REGEX.test(email)) {
+      respondJson(response, 400, { error: "Please enter a valid email address." });
+      return;
     }
-  });
+
+    const verified = verifyTelegramInitData(initData, botToken, initDataTtlSeconds);
+    if (!verified.ok) {
+      respondJson(response, 401, { error: verified.error });
+      return;
+    }
+
+    const telegramId = String(verified.user.id);
+    const existing = await db.getUser(telegramId);
+    const now = new Date().toISOString();
+
+    await db.upsertUser(telegramId, {
+      telegram_id: telegramId,
+      username: String(verified.user.username || existing?.username || ""),
+      first_name: String(verified.user.first_name || existing?.first_name || ""),
+      last_name: String(verified.user.last_name || existing?.last_name || ""),
+      email,
+      source: String(verified.start_param || existing?.source || "mini_app"),
+      state: "complete",
+      created_at: existing?.created_at || now,
+      updated_at: now
+    });
+
+    respondJson(response, 200, { ok: true });
+  } catch (error) {
+    respondJson(response, 400, { error: "Invalid request body." });
+  }
 }
 
 function isPublicRoute(method, pathname) {
