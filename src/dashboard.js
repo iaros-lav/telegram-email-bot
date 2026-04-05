@@ -46,9 +46,10 @@ async function handleRequest(
 ) {
   try {
     const requestUrl = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
+    const normalizedPath = normalizePath(requestUrl.pathname);
     const routeIsPublic = isPublicRoute(request.method, requestUrl.pathname);
 
-    if (request.method === "POST" && requestUrl.pathname === telegramWebhookPath) {
+    if (request.method === "POST" && normalizedPath === normalizePath(telegramWebhookPath)) {
       const update = await readJsonBody(request);
       await onTelegramUpdate(update);
       respondJson(response, 200, { ok: true });
@@ -60,12 +61,12 @@ async function handleRequest(
       return;
     }
 
-    if (request.method === "GET" && requestUrl.pathname === "/health") {
+    if (request.method === "GET" && normalizedPath === "/health") {
       respondJson(response, 200, { ok: true });
       return;
     }
 
-    if (request.method === "GET" && requestUrl.pathname === "/api/users") {
+    if (request.method === "GET" && normalizedPath === "/api/users") {
       respondJson(response, 200, {
         stats: await db.getStats(),
         users: await db.listUsers()
@@ -73,7 +74,7 @@ async function handleRequest(
       return;
     }
 
-    if (request.method === "GET" && requestUrl.pathname === "/export.csv") {
+    if (request.method === "GET" && normalizedPath === "/export.csv") {
       const users = (await db.listUsers()).filter((user) => user.email);
       const exportPath = writeCsvExport(users, exportDir);
       const csv = buildCsv(users);
@@ -86,17 +87,17 @@ async function handleRequest(
       return;
     }
 
-    if (request.method === "GET" && requestUrl.pathname === "/mini-app") {
+    if (request.method === "GET" && normalizedPath === "/mini-app") {
       respondHtml(response, renderMiniApp());
       return;
     }
 
-    if (request.method === "POST" && requestUrl.pathname === "/api/mini-app/submit") {
+    if (request.method === "POST" && normalizedPath === "/api/mini-app/submit") {
       await handleMiniAppSubmit(request, response, db, botToken, initDataTtlSeconds);
       return;
     }
 
-    if (request.method === "GET" && requestUrl.pathname === "/") {
+    if (request.method === "GET" && normalizedPath === "/") {
       respondHtml(response, await renderDashboard(db, token));
       return;
     }
@@ -557,10 +558,19 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
 }
 
 function isPublicRoute(method, pathname) {
+  const normalizedPath = normalizePath(pathname);
   return (
-    (method === "GET" && pathname === "/mini-app") ||
-    (method === "POST" && pathname === "/api/mini-app/submit")
+    (method === "GET" && normalizedPath === "/mini-app") ||
+    (method === "POST" && normalizedPath === "/api/mini-app/submit")
   );
+}
+
+function normalizePath(pathname) {
+  if (!pathname || pathname === "/") {
+    return "/";
+  }
+
+  return pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
 }
 
 function verifyTelegramInitData(initData, botToken, initDataTtlSeconds) {
