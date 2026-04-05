@@ -14,11 +14,12 @@ export function createEmailOctopusClient() {
 
   return {
     async upsertContact({ email, firstName, lastName, source, method }) {
+      const finalTags = buildTags(tags, { source, method });
       const payload = {
         api_key: apiKey,
         email_address: email,
         status,
-        tags: buildTags(tags, { source, method })
+        tags: finalTags
       };
 
       const fields = {};
@@ -46,11 +47,15 @@ export function createEmailOctopusClient() {
       }
 
       const memberId = crypto.createHash("md5").update(email).digest("hex");
+      const updatePayload = {
+        ...payload,
+        tags: toTagUpdateMap(finalTags)
+      };
       const updateResponse = await emailOctopusFetch(
         `/lists/${listId}/contacts/${memberId}`,
         {
           method: "PUT",
-          body: payload
+          body: updatePayload
         }
       );
 
@@ -62,11 +67,12 @@ export function createEmailOctopusClient() {
     },
     async unsubscribeContact({ email, firstName, lastName, source, method }) {
       const memberId = crypto.createHash("md5").update(email).digest("hex");
+      const finalTags = buildTags(tags, { source, method });
       const payload = {
         api_key: apiKey,
         email_address: email,
         status: "UNSUBSCRIBED",
-        tags: buildTags(tags, { source, method })
+        tags: toTagUpdateMap(finalTags)
       };
 
       const fields = {};
@@ -90,6 +96,10 @@ export function createEmailOctopusClient() {
 
       if (response.ok) {
         return { ok: true, action: "unsubscribed" };
+      }
+
+      if (response.error?.code === "MEMBER_NOT_FOUND") {
+        return { ok: true, action: "already_missing" };
       }
 
       return withFriendlyError(response);
@@ -123,6 +133,10 @@ function parseTags(value) {
     .split(",")
     .map((tag) => tag.trim())
     .filter(Boolean);
+}
+
+function toTagUpdateMap(tags) {
+  return Object.fromEntries(tags.map((tag) => [tag, true]));
 }
 
 function buildTags(baseTags, { source, method }) {
@@ -162,6 +176,10 @@ function describeEmailOctopusError(error) {
 
   if (code.includes("MEMBER_EXISTS")) {
     return "That email already exists in the mailing list.";
+  }
+
+  if (code.includes("MEMBER_NOT_FOUND")) {
+    return "That email was not found in the mailing list.";
   }
 
   if (message) {
