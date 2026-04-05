@@ -67,7 +67,7 @@ async function handleRequest(
     }
 
     if (!routeIsPublic && !isAuthorized(requestUrl, token)) {
-      respondText(response, 401, "Unauthorized dashboard request.");
+      respondText(response, 401, "Неавторизованный запрос к панели.");
       return;
     }
 
@@ -117,10 +117,10 @@ async function handleRequest(
       return;
     }
 
-    respondText(response, 404, "Not found.");
+    respondText(response, 404, "Не найдено.");
   } catch (error) {
     console.error("Dashboard request failed:", error);
-    respondText(response, 500, "Internal server error.");
+    respondText(response, 500, "Внутренняя ошибка сервера.");
   }
 }
 
@@ -156,6 +156,7 @@ async function renderDashboard(db, token) {
     <tr>
       <td>${escapeHtml(user.telegram_id)}</td>
       <td>${escapeHtml(user.email)}</td>
+      <td>${escapeHtml(user.country || "")}</td>
       <td>${escapeHtml(displayName(user))}</td>
       <td>${escapeHtml(user.username ? `@${user.username}` : "")}</td>
       <td>${escapeHtml(user.source || "")}</td>
@@ -164,11 +165,11 @@ async function renderDashboard(db, token) {
   `).join("");
 
   return `<!doctype html>
-<html lang="en">
+<html lang="ru">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Telegram Email Bot Dashboard</title>
+    <title>Панель подписок Telegram</title>
     <style>
       :root {
         color-scheme: light;
@@ -189,7 +190,7 @@ async function renderDashboard(db, token) {
           linear-gradient(180deg, #fbf5ef 0%, var(--bg) 100%);
       }
       main {
-        max-width: 1080px;
+        max-width: 1120px;
         margin: 0 auto;
         padding: 32px 20px 56px;
       }
@@ -261,7 +262,7 @@ async function renderDashboard(db, token) {
       table {
         width: 100%;
         border-collapse: collapse;
-        min-width: 760px;
+        min-width: 900px;
       }
       th, td {
         padding: 14px 16px;
@@ -284,26 +285,26 @@ async function renderDashboard(db, token) {
   <body>
     <main>
       <section class="hero">
-        <h1>Email Signups</h1>
-        <p>Your Telegram bot is collecting emails in private chat. This dashboard reads directly from the SQLite database and stays local unless you deploy it somewhere else.</p>
+        <h1>Подписки по email</h1>
+        <p>Здесь собраны email-адреса, страны и источники подписки из Telegram-бота. Панель читает данные прямо из вашей базы и позволяет быстро выгрузить CSV.</p>
       </section>
       <section class="stats">
         <article class="card">
-          <span class="label">Users Seen</span>
+          <span class="label">Всего пользователей</span>
           <strong class="value">${stats.total_users}</strong>
         </article>
         <article class="card">
-          <span class="label">Emails Collected</span>
+          <span class="label">Сохранённых email</span>
           <strong class="value">${stats.email_count}</strong>
         </article>
         <article class="card">
-          <span class="label">Channel Starts</span>
+          <span class="label">Запусков из канала</span>
           <strong class="value">${stats.channel_count}</strong>
         </article>
       </section>
       <section class="actions">
-        <a class="button" href="/export.csv?token=${encodeURIComponent(token)}">Download CSV</a>
-        <a class="button ghost" href="/api/users?token=${encodeURIComponent(token)}">View JSON</a>
+        <a class="button" href="/export.csv?token=${encodeURIComponent(token)}">Скачать CSV</a>
+        <a class="button ghost" href="/api/users?token=${encodeURIComponent(token)}">Открыть JSON</a>
       </section>
       <section class="table-wrap">
         <table>
@@ -311,14 +312,15 @@ async function renderDashboard(db, token) {
             <tr>
               <th>Telegram ID</th>
               <th>Email</th>
-              <th>Name</th>
+              <th>Страна</th>
+              <th>Имя</th>
               <th>Username</th>
-              <th>Source</th>
-              <th>Updated</th>
+              <th>Источник</th>
+              <th>Обновлено</th>
             </tr>
           </thead>
           <tbody>
-            ${rows || `<tr><td class="empty" colspan="6">No emails collected yet.</td></tr>`}
+            ${rows || `<tr><td class="empty" colspan="7">Пока нет сохранённых email.</td></tr>`}
           </tbody>
         </table>
       </section>
@@ -329,11 +331,11 @@ async function renderDashboard(db, token) {
 
 function renderMiniApp() {
   return `<!doctype html>
-<html lang="en">
+<html lang="ru">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Email Signup</title>
+    <title>Подписка по email</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
       :root {
@@ -428,17 +430,19 @@ function renderMiniApp() {
   <body>
     <main>
       <section class="panel">
-        <h1>Stay In Touch</h1>
-        <p>Enter your email to receive updates from this Telegram channel. You can change it later by reopening this form or sending <strong>/start</strong> to the bot.</p>
+        <h1>Оставайтесь на связи</h1>
+        <p>Оставьте email и страну, чтобы получать обновления этого Telegram-канала. Позже вы сможете изменить данные, снова открыв эту форму или отправив боту <strong>/start</strong>.</p>
         <form id="signup-form">
-          <label for="email">Email address</label>
+          <label for="email">Email</label>
           <input id="email" name="email" type="email" autocomplete="email" placeholder="name@example.com" required>
-          <button type="submit">Save Email</button>
+          <label for="country">Страна</label>
+          <input id="country" name="country" type="text" autocomplete="country-name" placeholder="Например, Россия">
+          <button type="submit">Сохранить данные</button>
         </form>
-        <p id="note" class="note">By submitting, you agree that the channel owner may store your email for contact or newsletter purposes.</p>
+        <p id="note" class="note">Отправляя форму, вы соглашаетесь, что владелец канала может хранить ваш email и страну для связи и рассылки новостей.</p>
         <section id="success-panel" class="success-panel">
-          <strong>You’re on the list.</strong>
-          <p>You can close this window now. If you ever want to remove your data, send <strong>/delete</strong> to the bot.</p>
+          <strong>Готово, вы в списке.</strong>
+          <p>Окно можно закрыть. Если захотите удалить данные позже, отправьте боту <strong>/delete</strong>.</p>
         </section>
         <div id="message" class="message"></div>
       </section>
@@ -455,15 +459,17 @@ function renderMiniApp() {
       const note = document.getElementById("note");
       const successPanel = document.getElementById("success-panel");
       const emailInput = document.getElementById("email");
+      const countryInput = document.getElementById("country");
 
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
 
         const email = emailInput.value.trim();
+        const country = countryInput.value.trim();
         const initData = webApp?.initData || "";
 
         if (!initData) {
-          showMessage("This Mini App needs to be opened from Telegram so it can verify your identity.", "error");
+          showMessage("Эту Mini App нужно открывать прямо из Telegram, чтобы бот понял, кто отправляет форму.", "error");
           return;
         }
 
@@ -473,6 +479,7 @@ function renderMiniApp() {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               email,
+              country,
               init_data: initData,
               user: webApp?.initDataUnsafe?.user || null,
               source: webApp?.initDataUnsafe?.start_param || null
@@ -481,12 +488,12 @@ function renderMiniApp() {
 
           const payload = await response.json();
           if (!response.ok) {
-            throw new Error(payload.error || "Could not save your email.");
+            throw new Error(payload.error || "Не удалось сохранить данные.");
           }
 
           showSuccess();
           if (webApp) {
-            webApp.MainButton.setText("Close");
+            webApp.MainButton.setText("Закрыть");
             webApp.MainButton.show();
             webApp.onEvent("mainButtonClicked", () => webApp.close());
           }
@@ -513,11 +520,11 @@ function renderMiniApp() {
 
 function renderPrivacyPage() {
   return `<!doctype html>
-<html lang="en">
+<html lang="ru">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Privacy Policy</title>
+    <title>Политика конфиденциальности</title>
     <style>
       :root {
         --bg: #fbf6ef;
@@ -561,13 +568,14 @@ function renderPrivacyPage() {
   <body>
     <main>
       <article>
-        <h1>Privacy</h1>
-        <p>This bot collects a Telegram user ID, basic public profile fields, signup source, and one current email address so the channel owner can manage newsletter signups.</p>
-        <p>If EmailOctopus is enabled, the submitted email is also sent to EmailOctopus for mailing-list delivery.</p>
+        <h1>Конфиденциальность</h1>
+        <p>Этот бот сохраняет Telegram ID, базовые публичные поля профиля, источник подписки, один текущий email и указанную страну, чтобы владелец канала мог управлять подписками на рассылку.</p>
+        <p>Если включён EmailOctopus, отправленный email также передаётся туда для доставки писем.</p>
         <ul>
-          <li>Your email is used for channel updates, announcements, and occasional newsletter messages.</li>
-          <li>You can remove your saved local data at any time by sending <strong>/delete</strong> to the bot.</li>
-          <li>You can update your email at any time by sending <strong>/start</strong> and submitting a new one.</li>
+          <li>Email используется для новостей канала, объявлений и редких писем рассылки.</li>
+          <li>Страна нужна для сегментации аудитории и более понятной аналитики.</li>
+          <li>Локальные данные можно удалить в любой момент командой <strong>/delete</strong>.</li>
+          <li>Изменить email или страну можно в любой момент, отправив <strong>/start</strong> заново.</li>
         </ul>
       </article>
     </main>
@@ -597,6 +605,7 @@ function buildCsv(users) {
       user.first_name,
       user.last_name,
       user.email,
+      user.country,
       user.source,
       user.created_at,
       user.updated_at
@@ -604,7 +613,7 @@ function buildCsv(users) {
   );
 
   return [
-    "telegram_id,username,first_name,last_name,email,source,created_at,updated_at",
+    "telegram_id,username,first_name,last_name,email,country,source,created_at,updated_at",
     ...rows
   ].join("\n");
 }
@@ -622,15 +631,21 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
   try {
     const payload = await readJsonBody(request);
     const email = String(payload.email || "").trim().toLowerCase();
+    const country = normalizeCountry(payload.country || "");
     const user = payload.user || null;
 
     if (!user?.id) {
-      respondJson(response, 400, { error: "Missing Telegram user data." });
+      respondJson(response, 400, { error: "Не удалось определить пользователя Telegram." });
       return;
     }
 
     if (!EMAIL_REGEX.test(email)) {
-      respondJson(response, 400, { error: "Please enter a valid email address." });
+      respondJson(response, 400, { error: "Пожалуйста, введите корректный email." });
+      return;
+    }
+
+    if (country && !isValidCountry(country)) {
+      respondJson(response, 400, { error: "Пожалуйста, укажите страну коротко, одним полем." });
       return;
     }
 
@@ -638,6 +653,7 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
     const existing = await db.getUser(telegramId);
     const now = new Date().toISOString();
     const source = String(payload.source || existing?.source || "mini_app");
+    const finalCountry = country || existing?.country || "";
 
     await db.upsertUser(telegramId, {
       telegram_id: telegramId,
@@ -645,6 +661,7 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
       first_name: String(user.first_name || existing?.first_name || ""),
       last_name: String(user.last_name || existing?.last_name || ""),
       email,
+      country: finalCountry,
       source,
       state: "complete",
       created_at: existing?.created_at || now,
@@ -655,18 +672,19 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
       email,
       firstName: String(user.first_name || existing?.first_name || ""),
       lastName: String(user.last_name || existing?.last_name || ""),
+      country: finalCountry,
       source,
       method: "mini_app"
     });
 
     if (!syncResult.ok) {
-      respondJson(response, 502, { error: "Email saved locally, but mailing-list sync failed." });
+      respondJson(response, 502, { error: "Данные сохранены локально, но синхронизация с рассылкой не удалась." });
       return;
     }
 
     respondJson(response, 200, { ok: true });
-  } catch (error) {
-    respondJson(response, 400, { error: "Invalid request body." });
+  } catch {
+    respondJson(response, 400, { error: "Некорректное тело запроса." });
   }
 }
 
@@ -690,6 +708,14 @@ function normalizePath(pathname) {
 
 function isAuthorized(requestUrl, token) {
   return requestUrl.searchParams.get("token") === token;
+}
+
+function normalizeCountry(value) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function isValidCountry(value) {
+  return value.length >= 2 && value.length <= 80;
 }
 
 function escapeHtml(value) {

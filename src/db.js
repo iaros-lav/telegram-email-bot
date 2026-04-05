@@ -26,12 +26,15 @@ function createSqliteStore(filePath) {
       first_name TEXT NOT NULL DEFAULT '',
       last_name TEXT NOT NULL DEFAULT '',
       email TEXT NOT NULL DEFAULT '',
+      country TEXT NOT NULL DEFAULT '',
       source TEXT NOT NULL DEFAULT 'direct',
       state TEXT NOT NULL DEFAULT 'awaiting_email',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
   `);
+
+  ensureSqliteColumn(database, "users", "country", "TEXT NOT NULL DEFAULT ''");
 
   const getUserStatement = database.prepare(`
     SELECT
@@ -40,6 +43,7 @@ function createSqliteStore(filePath) {
       first_name,
       last_name,
       email,
+      country,
       source,
       state,
       created_at,
@@ -55,16 +59,18 @@ function createSqliteStore(filePath) {
       first_name,
       last_name,
       email,
+      country,
       source,
       state,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(telegram_id) DO UPDATE SET
       username = excluded.username,
       first_name = excluded.first_name,
       last_name = excluded.last_name,
       email = excluded.email,
+      country = excluded.country,
       source = excluded.source,
       state = excluded.state,
       created_at = excluded.created_at,
@@ -78,12 +84,18 @@ function createSqliteStore(filePath) {
       first_name,
       last_name,
       email,
+      country,
       source,
       state,
       created_at,
       updated_at
     FROM users
     ORDER BY updated_at DESC
+  `);
+
+  const deleteUserStatement = database.prepare(`
+    DELETE FROM users
+    WHERE telegram_id = ?
   `);
 
   const statsStatement = database.prepare(`
@@ -106,6 +118,7 @@ function createSqliteStore(filePath) {
         user.first_name || "",
         user.last_name || "",
         user.email || "",
+        user.country || "",
         user.source || "direct",
         user.state || "awaiting_email",
         user.created_at,
@@ -117,11 +130,7 @@ function createSqliteStore(filePath) {
       return listUsersStatement.all();
     },
     async deleteUser(userId) {
-      const deleteStatement = database.prepare(`
-        DELETE FROM users
-        WHERE telegram_id = ?
-      `);
-      deleteStatement.run(String(userId));
+      deleteUserStatement.run(String(userId));
       return true;
     },
     async getStats() {
@@ -150,11 +159,16 @@ async function createPostgresStore(databaseUrl) {
       first_name TEXT NOT NULL DEFAULT '',
       last_name TEXT NOT NULL DEFAULT '',
       email TEXT NOT NULL DEFAULT '',
+      country TEXT NOT NULL DEFAULT '',
       source TEXT NOT NULL DEFAULT 'direct',
       state TEXT NOT NULL DEFAULT 'awaiting_email',
       created_at TIMESTAMPTZ NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL
     )
+  `);
+  await client.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS country TEXT NOT NULL DEFAULT ''
   `);
 
   return {
@@ -168,6 +182,7 @@ async function createPostgresStore(databaseUrl) {
             first_name,
             last_name,
             email,
+            country,
             source,
             state,
             created_at,
@@ -188,16 +203,18 @@ async function createPostgresStore(databaseUrl) {
             first_name,
             last_name,
             email,
+            country,
             source,
             state,
             created_at,
             updated_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz)
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz, $10::timestamptz)
           ON CONFLICT (telegram_id) DO UPDATE SET
             username = EXCLUDED.username,
             first_name = EXCLUDED.first_name,
             last_name = EXCLUDED.last_name,
             email = EXCLUDED.email,
+            country = EXCLUDED.country,
             source = EXCLUDED.source,
             state = EXCLUDED.state,
             created_at = EXCLUDED.created_at,
@@ -208,6 +225,7 @@ async function createPostgresStore(databaseUrl) {
             first_name,
             last_name,
             email,
+            country,
             source,
             state,
             created_at,
@@ -219,6 +237,7 @@ async function createPostgresStore(databaseUrl) {
           user.first_name || "",
           user.last_name || "",
           user.email || "",
+          user.country || "",
           user.source || "direct",
           user.state || "awaiting_email",
           user.created_at,
@@ -235,6 +254,7 @@ async function createPostgresStore(databaseUrl) {
           first_name,
           last_name,
           email,
+          country,
           source,
           state,
           created_at,
@@ -287,4 +307,13 @@ function normalizePostgresUser(row) {
 function shouldUseSsl(databaseUrl) {
   const url = new URL(databaseUrl);
   return url.hostname !== "localhost" && url.hostname !== "127.0.0.1";
+}
+
+function ensureSqliteColumn(database, tableName, columnName, definition) {
+  const columns = database.prepare(`PRAGMA table_info(${tableName})`).all();
+  const hasColumn = columns.some((column) => column.name === columnName);
+
+  if (!hasColumn) {
+    database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  }
 }

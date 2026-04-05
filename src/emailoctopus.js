@@ -13,8 +13,8 @@ export function createEmailOctopusClient() {
   }
 
   return {
-    async upsertContact({ email, firstName, lastName, source, method }) {
-      const finalTags = buildTags(tags, { source, method });
+    async upsertContact({ email, firstName, lastName, country, source, method }) {
+      const finalTags = buildTags(tags, { source, method, country });
       const payload = {
         api_key: apiKey,
         email_address: email,
@@ -65,9 +65,9 @@ export function createEmailOctopusClient() {
 
       return withFriendlyError(updateResponse);
     },
-    async unsubscribeContact({ email, firstName, lastName, source, method }) {
+    async unsubscribeContact({ email, firstName, lastName, country, source, method }) {
       const memberId = crypto.createHash("md5").update(email).digest("hex");
-      const finalTags = buildTags(tags, { source, method });
+      const finalTags = buildTags(tags, { source, method, country });
       const payload = {
         api_key: apiKey,
         email_address: email,
@@ -139,13 +139,20 @@ function toTagUpdateMap(tags) {
   return Object.fromEntries(tags.map((tag) => [tag, true]));
 }
 
-function buildTags(baseTags, { source, method }) {
+function buildTags(baseTags, { source, method, country }) {
   const dynamicTags = [];
-  if (source) {
-    dynamicTags.push(`source-${sanitizeTag(source)}`);
+  const safeSource = sanitizeTag(source);
+  const safeMethod = sanitizeTag(method);
+  const safeCountry = sanitizeTag(country);
+
+  if (safeSource) {
+    dynamicTags.push(`source-${safeSource}`);
   }
-  if (method) {
-    dynamicTags.push(`method-${sanitizeTag(method)}`);
+  if (safeMethod) {
+    dynamicTags.push(`method-${safeMethod}`);
+  }
+  if (safeCountry) {
+    dynamicTags.push(`country-${safeCountry}`);
   }
 
   return [...new Set([...baseTags, ...dynamicTags])];
@@ -154,7 +161,7 @@ function buildTags(baseTags, { source, method }) {
 function sanitizeTag(value) {
   return String(value)
     .toLowerCase()
-    .replaceAll(/[^a-z0-9_-]+/g, "-")
+    .replaceAll(/[^\p{L}\p{N}_-]+/gu, "-")
     .replaceAll(/-+/g, "-")
     .replaceAll(/^-|-$/g, "");
 }
@@ -171,20 +178,20 @@ function describeEmailOctopusError(error) {
   const message = String(error?.message || "");
 
   if (code.includes("INVALID") || code.includes("EMAIL")) {
-    return "The mailing-list provider rejected that email address.";
+    return "Сервис рассылки отклонил этот email.";
   }
 
   if (code.includes("MEMBER_EXISTS")) {
-    return "That email already exists in the mailing list.";
+    return "Этот email уже есть в списке рассылки.";
   }
 
   if (code.includes("MEMBER_NOT_FOUND")) {
-    return "That email was not found in the mailing list.";
+    return "Этот email не найден в списке рассылки.";
   }
 
   if (message) {
     return message;
   }
 
-  return "The mailing-list provider could not process that request.";
+  return "Сервис рассылки не смог обработать этот запрос.";
 }

@@ -109,14 +109,14 @@ async function handleUpdate(update, db, emailOctopus) {
   if (message.chat.type !== "private") {
     await sendMessage(
       message.chat.id,
-      "Please message me in a private chat so I can safely collect your email."
+      "Напишите мне в личные сообщения, чтобы я мог безопасно сохранить ваш email."
     );
     return;
   }
 
   const text = message.text?.trim();
   if (!text) {
-    await sendMessage(message.chat.id, "Please send text only. Use /start to begin.");
+    await sendMessage(message.chat.id, "Пожалуйста, отправляйте текстовые сообщения. Для начала используйте /start.");
     return;
   }
 
@@ -161,8 +161,13 @@ async function handleUpdate(update, db, emailOctopus) {
     return;
   }
 
+  if (command?.name === "/skip") {
+    await handleSkip(message, db, emailOctopus);
+    return;
+  }
+
   if (command && command.name.startsWith("/")) {
-    await sendMessage(message.chat.id, "I don't know that command. Use /help to see what I can do.");
+    await sendMessage(message.chat.id, "Я не знаю такую команду. Отправьте /help, чтобы увидеть список доступных команд.");
     return;
   }
 
@@ -173,6 +178,7 @@ async function handleStart(message, db, startPayload = "") {
   const userId = String(message.from.id);
   const record = await db.getUser(userId);
   const source = resolveSource(record, startPayload || getStartPayload(message.text || ""));
+  const now = nowIso();
 
   await db.upsertUser(userId, {
     telegram_id: message.from.id,
@@ -180,42 +186,46 @@ async function handleStart(message, db, startPayload = "") {
     first_name: message.from.first_name || "",
     last_name: message.from.last_name || "",
     email: record?.email || "",
+    country: record?.country || "",
     source,
     state: "awaiting_email",
-    updated_at: nowIso(),
-    created_at: record?.created_at || nowIso()
+    updated_at: now,
+    created_at: record?.created_at || now
   });
 
   const lines = [
-    "Thanks for being here.",
+    "Спасибо, что вы здесь.",
     "",
-    "I can save one email address for updates from the channel.",
+    "Я могу сохранить один email и страну для новостей канала.",
     "",
-    "Reply with your best email address."
+    "Сначала просто отправьте ваш email."
   ];
 
   if (PUBLIC_BASE_URL) {
-    lines.push("", "If you prefer, tap the button below for a cleaner signup form.");
+    lines.push("", "Если удобнее, нажмите кнопку ниже и заполните красивую форму.");
   }
 
   lines.push(
     "",
-    "What you’ll get: important posts, announcements, and occasional newsletter updates.",
+    "После email я попрошу указать страну.",
+    "Если страну не хотите указывать, этот шаг можно будет пропустить командой /skip.",
     "",
-    "You can remove your data anytime with /delete."
+    "Что вы получите: важные посты, объявления и редкие письма рассылки.",
+    "",
+    "Удалить свои данные можно командой /delete."
   );
 
   if (PRIVACY_URL) {
-    lines.push(`Privacy: ${PRIVACY_URL}`);
+    lines.push(`Политика конфиденциальности: ${PRIVACY_URL}`);
   }
 
   await sendMessage(
     message.chat.id,
-    [...lines, "", "Example: name@example.com"].join("\n"),
+    [...lines, "", "Пример: name@example.com"].join("\n"),
     PUBLIC_BASE_URL ? {
       reply_markup: {
         inline_keyboard: [[{
-          text: "Open Email Form",
+          text: "Открыть форму",
           web_app: {
             url: `${PUBLIC_BASE_URL.replace(/\/$/, "")}/mini-app`
           }
@@ -229,99 +239,176 @@ async function handleText(message, db, emailOctopus) {
   const userId = String(message.from.id);
   const record = await db.getUser(userId);
 
-  if (!record || record.state !== "awaiting_email") {
-    await sendMessage(message.chat.id, "Send /start to begin the email registration flow.");
+  if (!record) {
+    await sendMessage(message.chat.id, "Чтобы начать, отправьте /start.");
     return;
   }
 
-  const email = normalizeEmail(message.text || "");
-  if (!isValidEmail(email)) {
-    await sendMessage(message.chat.id, "That doesn't look like a valid email. Please try again.");
+  if (record.state === "awaiting_email") {
+    const email = normalizeEmail(message.text || "");
+    if (!isValidEmail(email)) {
+      await sendMessage(message.chat.id, "Похоже, это некорректный email. Попробуйте ещё раз.");
+      return;
+    }
+
+    const updated = await db.upsertUser(userId, {
+      ...record,
+      email,
+      state: "awaiting_country",
+      updated_at: nowIso()
+    });
+
+    await promptCountry(message.chat.id, updated.country || "");
     return;
   }
 
-  await db.upsertUser(userId, {
+  if (record.state === "awaiting_country") {
+    const country = normalizeCountry(message.text || "");
+    if (!isValidCountry(country)) {
+      await sendMessage(
+        message.chat.id,
+        "Пожалуйста, укажите страну одним коротким сообщением. Например: Россия. Если хотите пропустить этот шаг, отправьте /skip."
+      );
+      return;
+    }
+
+    await completeSignup(message.chat.id, db, emailOctopus, record, country, "chat");
+    return;
+  }
+
+  await sendMessage(message.chat.id, "Если хотите обновить email или страну, отправьте /start.");
+}
+
+async function handleSkip(message, db, emailOctopus) {
+  const userId = String(message.from.id);
+  const record = await db.getUser(userId);
+
+  if (!record || record.state !== "awaiting_country") {
+    await sendMessage(message.chat.id, "Команда /skip сейчас не нужна. Для начала или обновления данных используйте /start.");
+    return;
+  }
+
+  await completeSignup(message.chat.id, db, emailOctopus, record, record.country || "", "chat");
+}
+
+async function completeSignup(chatId, db, emailOctopus, record, country, method) {
+  if (!record?.email) {
+    await sendMessage(chatId, "Не удалось завершить сохранение. Пожалуйста, отправьте /start и попробуйте ещё раз.");
+    return;
+  }
+
+  const userId = String(record.telegram_id);
+  const updated = await db.upsertUser(userId, {
     ...record,
-    email,
+    country,
     state: "complete",
     updated_at: nowIso()
   });
 
   const syncResult = await syncToEmailOctopus(emailOctopus, {
-    email,
-    firstName: record.first_name,
-    lastName: record.last_name,
-    source: record.source,
-    method: "chat"
+    email: updated.email,
+    firstName: updated.first_name,
+    lastName: updated.last_name,
+    country: updated.country,
+    source: updated.source,
+    method
   });
 
+  if (syncResult.ok) {
+    await sendMessage(
+      chatId,
+      updated.country
+        ? `Готово. Я сохранил ваш email и страну: ${updated.country}. Если захотите обновить данные позже, отправьте /start.`
+        : "Готово. Я сохранил ваш email. Если захотите позже добавить или изменить страну, отправьте /start."
+    );
+    return;
+  }
+
   await sendMessage(
-    message.chat.id,
-    syncResult.ok
-      ? "Thanks. Your email has been saved. Send /start anytime if you want to update it."
-      : `Thanks. Your email was saved locally, but the mailing-list sync failed. ${syncResult.message || "Please try again in a moment."}`
+    chatId,
+    `Данные сохранены локально, но синхронизация со списком рассылки не удалась. ${syncResult.message || "Попробуйте ещё раз чуть позже."}`
   );
+}
+
+async function promptCountry(chatId, currentCountry = "") {
+  const lines = [
+    "Теперь укажите вашу страну.",
+    "Например: Россия, Украина, Казахстан, Германия."
+  ];
+
+  if (currentCountry) {
+    lines.push(`Сейчас у вас сохранена страна: ${currentCountry}.`);
+  }
+
+  lines.push("Если не хотите указывать страну или хотите оставить текущую, отправьте /skip.");
+  await sendMessage(chatId, lines.join("\n"));
 }
 
 async function handleExport(chatId, db) {
   if (!isAdminChat(chatId)) {
-    await sendMessage(chatId, "You are not allowed to export the email list.");
+    await sendMessage(chatId, "У вас нет доступа к выгрузке email-списка.");
     return;
   }
 
   const users = (await db.listUsers()).filter((user) => user.email);
   if (users.length === 0) {
-    await sendMessage(chatId, "No emails have been collected yet.");
+    await sendMessage(chatId, "Пока не собрано ни одного email.");
     return;
   }
 
   const dashboardUrl = SITE_URL
     ? `${SITE_URL}/?token=${encodeURIComponent(DASHBOARD_TOKEN)}`
     : `http://${DASHBOARD_HOST}:${DASHBOARD_PORT}/?token=${encodeURIComponent(DASHBOARD_TOKEN)}`;
+
   await sendMessage(
     chatId,
     DASHBOARD_ENABLED
-      ? `Found ${users.length} collected emails. Open the local dashboard for CSV download: ${dashboardUrl}`
-      : `Found ${users.length} collected emails. Enable the dashboard with DASHBOARD_ENABLED=true to download CSV locally.`
+      ? `Собрано ${users.length} email. Откройте панель и скачайте CSV: ${dashboardUrl}`
+      : `Собрано ${users.length} email. Включите панель через DASHBOARD_ENABLED=true, чтобы скачать CSV.`
   );
 }
 
 async function handleStats(chatId, db) {
   if (!isAdminChat(chatId)) {
-    await sendMessage(chatId, "You are not allowed to view signup stats.");
+    await sendMessage(chatId, "У вас нет доступа к статистике подписок.");
     return;
   }
 
   const users = await db.listUsers();
   const withEmail = users.filter((user) => user.email);
-  const sourceCounts = countBySource(withEmail);
-  const sourceLines = Object.entries(sourceCounts)
-    .sort((left, right) => right[1] - left[1])
-    .map(([source, count]) => `${source}: ${count}`);
-
+  const sourceCounts = countByField(withEmail, (user) => user.source || "direct");
+  const countryCounts = countByField(withEmail, (user) => user.country || "не указана");
+  const sourceLines = formatBreakdown(sourceCounts);
+  const countryLines = formatBreakdown(countryCounts);
   const latestUser = withEmail[0];
+
   await sendMessage(
     chatId,
     [
-      `Total users seen: ${users.length}`,
-      `Saved emails: ${withEmail.length}`,
-      latestUser ? `Latest signup: ${latestUser.email} (${latestUser.source || "direct"})` : "Latest signup: none yet",
+      `Всего пользователей: ${users.length}`,
+      `Сохранённых email: ${withEmail.length}`,
+      latestUser
+        ? `Последняя заявка: ${latestUser.email} (${latestUser.source || "direct"}, ${latestUser.country || "страна не указана"})`
+        : "Последняя заявка: пока нет",
       "",
-      "Sources:",
-      ...(sourceLines.length > 0 ? sourceLines : ["No source data yet."])
+      "Источники:",
+      ...(sourceLines.length > 0 ? sourceLines : ["Пока нет данных."]),
+      "",
+      "Страны:",
+      ...(countryLines.length > 0 ? countryLines : ["Пока нет данных."])
     ].join("\n")
   );
 }
 
 async function handleCount(chatId, db) {
   if (!isAdminChat(chatId)) {
-    await sendMessage(chatId, "You are not allowed to view signup counts.");
+    await sendMessage(chatId, "У вас нет доступа к количеству подписок.");
     return;
   }
 
   const users = await db.listUsers();
   const withEmail = users.filter((user) => user.email);
-  await sendMessage(chatId, `Saved emails: ${withEmail.length}`);
+  await sendMessage(chatId, `Сохранённых email: ${withEmail.length}`);
 }
 
 async function handleDelete(message, db, emailOctopus) {
@@ -329,7 +416,7 @@ async function handleDelete(message, db, emailOctopus) {
   const record = await db.getUser(userId);
 
   if (!record) {
-    await sendMessage(message.chat.id, "I don't have any saved data for this chat.");
+    await sendMessage(message.chat.id, "У меня нет сохранённых данных для этого чата.");
     return;
   }
 
@@ -339,6 +426,7 @@ async function handleDelete(message, db, emailOctopus) {
       email: record.email,
       firstName: record.first_name,
       lastName: record.last_name,
+      country: record.country,
       source: record.source,
       method: "chat"
     });
@@ -349,22 +437,22 @@ async function handleDelete(message, db, emailOctopus) {
   await sendMessage(
     message.chat.id,
     unsubscribeResult.ok
-      ? "Your saved email and local signup data have been deleted. You can use /start anytime to sign up again."
-      : `Your local signup data was deleted, but the mailing-list unsubscribe failed. ${unsubscribeResult.message || "Please check EmailOctopus manually."}`
+      ? "Ваш email и локальные данные подписки удалены. Если захотите подписаться снова, отправьте /start."
+      : `Локальные данные удалены, но отписка в сервисе рассылки не удалась. ${unsubscribeResult.message || "Проверьте EmailOctopus вручную."}`
   );
 }
 
 async function handlePrivacy(chatId) {
   const lines = [
-    "Privacy summary:",
-    "I store your Telegram ID, basic profile fields, signup source, and your current email address.",
-    "That data is used to manage channel email signups.",
-    "If EmailOctopus is enabled, your email is also sent there for newsletter delivery.",
-    "Use /delete anytime to remove your saved local data."
+    "Кратко о конфиденциальности:",
+    "Я храню ваш Telegram ID, базовые поля профиля, источник подписки, текущий email и указанную страну.",
+    "Эти данные используются для управления email-подписками канала.",
+    "Если включён EmailOctopus, ваш email также отправляется туда для доставки писем.",
+    "Удалить локальные данные можно в любой момент командой /delete."
   ];
 
   if (PRIVACY_URL) {
-    lines.push(`Full privacy page: ${PRIVACY_URL}`);
+    lines.push(`Полная страница: ${PRIVACY_URL}`);
   }
 
   await sendMessage(chatId, lines.join("\n"));
@@ -372,26 +460,26 @@ async function handlePrivacy(chatId) {
 
 async function handlePromo(chatId, args) {
   if (!isAdminChat(chatId)) {
-    await sendMessage(chatId, "You are not allowed to generate promo copy.");
+    await sendMessage(chatId, "У вас нет доступа к генерации промо-текста.");
     return;
   }
 
   if (!BOT_USERNAME) {
-    await sendMessage(chatId, "Set BOT_USERNAME first so I can generate a channel signup link.");
+    await sendMessage(chatId, "Сначала задайте BOT_USERNAME, чтобы я мог собрать ссылку для канала.");
     return;
   }
 
   const source = args ? sanitizeStartPayload(args) : "channel";
   const signupLink = `https://t.me/${BOT_USERNAME}?start=${source}`;
   const promo = [
-    "Stay in touch with Немного Нервно.",
-    "Get important posts, announcements, and occasional newsletter updates by email.",
+    "Оставайтесь на связи с «Немного Нервно».",
+    "Получайте важные посты, объявления и редкие письма рассылки на email.",
     "",
-    `Sign up here: ${signupLink}`
+    `Подписаться: ${signupLink}`
   ];
 
   if (PRIVACY_URL) {
-    promo.push(`Privacy: ${PRIVACY_URL}`);
+    promo.push(`Конфиденциальность: ${PRIVACY_URL}`);
   }
 
   await sendMessage(chatId, promo.join("\n"));
@@ -401,15 +489,16 @@ async function sendHelp(chatId) {
   await sendMessage(
     chatId,
     [
-      "/start - start or restart email collection",
-      "/help - show help",
-      "/privacy - how your data is used",
-      "/delete - delete your saved local data",
-      "/stats - admin signup stats",
-      "/count - admin email count",
-      "/promo [source] - admin channel post copy with tracking link",
-      "/export - admin-only dashboard link",
-      PUBLIC_BASE_URL ? "Mini App is enabled for one-tap signup." : "Set PUBLIC_BASE_URL to enable the Mini App button."
+      "/start - начать или заново пройти подписку",
+      "/help - показать помощь",
+      "/privacy - как используются ваши данные",
+      "/delete - удалить сохранённые данные",
+      "/skip - пропустить шаг со страной",
+      "/stats - админская статистика подписок",
+      "/count - админское количество email",
+      "/promo [source] - админский текст для поста со ссылкой и меткой источника",
+      "/export - ссылка на панель и CSV для администратора",
+      PUBLIC_BASE_URL ? "Mini App включена: можно подписываться через кнопку в чате." : "Укажите PUBLIC_BASE_URL, чтобы включить кнопку Mini App."
     ].join("\n")
   );
 }
@@ -454,8 +543,16 @@ function normalizeEmail(value) {
   return value.trim().toLowerCase();
 }
 
+function normalizeCountry(value) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
 function isValidEmail(value) {
   return EMAIL_REGEX.test(value);
+}
+
+function isValidCountry(value) {
+  return value.length >= 2 && value.length <= 80;
 }
 
 function nowIso() {
@@ -546,13 +643,19 @@ async function unsubscribeFromEmailOctopus(client, contact) {
   return result;
 }
 
-function countBySource(users) {
+function countByField(users, selector) {
   const counts = {};
   for (const user of users) {
-    const source = user.source || "direct";
-    counts[source] = (counts[source] || 0) + 1;
+    const value = selector(user);
+    counts[value] = (counts[value] || 0) + 1;
   }
   return counts;
+}
+
+function formatBreakdown(counts) {
+  return Object.entries(counts)
+    .sort((left, right) => right[1] - left[1])
+    .map(([label, count]) => `${label}: ${count}`);
 }
 
 function isAdminChat(chatId) {
