@@ -5,6 +5,8 @@ import process from "node:process";
 import { createStore } from "./db.js";
 import { startDashboard } from "./dashboard.js";
 import { createEmailOctopusClient } from "./emailoctopus.js";
+import { createGoogleSheetsClient } from "./google-sheets.js";
+import { createRateLimiter } from "./rate-limit.js";
 
 loadEnvFile();
 
@@ -24,6 +26,10 @@ const TELEGRAM_WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || crypto.ra
 const TELEGRAM_WEBHOOK_PATH = `/telegram/webhook/${TELEGRAM_WEBHOOK_SECRET}`;
 const SITE_URL = PUBLIC_BASE_URL ? PUBLIC_BASE_URL.replace(/\/$/, "") : "";
 const PRIVACY_URL = SITE_URL ? `${SITE_URL}/privacy` : "";
+const ADMIN_SIGNUP_ALERTS = process.env.ADMIN_SIGNUP_ALERTS !== "false";
+const CHAT_RATE_LIMIT_WINDOW_SECONDS = Number(process.env.RATE_LIMIT_WINDOW_SECONDS || 60);
+const CHAT_RATE_LIMIT_MAX_HITS = Number(process.env.RATE_LIMIT_MAX_MESSAGES || 12);
+const NEWSLETTER_SCHEDULE_TEXT = process.env.NEWSLETTER_SCHEDULE_TEXT || "Следующее письмо обычно приходит по пятницам.";
 
 if (!BOT_TOKEN) {
   console.error("Missing BOT_TOKEN in environment.");
@@ -32,6 +38,10 @@ if (!BOT_TOKEN) {
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const COUNTRY_REGEX = /^[A-Za-z][A-Za-z .,'-]{1,79}$/;
+const chatRateLimiter = createRateLimiter({
+  windowMs: CHAT_RATE_LIMIT_WINDOW_SECONDS * 1000,
+  maxHits: CHAT_RATE_LIMIT_MAX_HITS
+});
 let lastUpdateId = 0;
 
 main().catch((error) => {
@@ -45,6 +55,7 @@ async function main() {
     databaseUrl: DATABASE_URL
   });
   const emailOctopus = createEmailOctopusClient();
+  const googleSheets = createGoogleSheetsClient();
 
   if (DASHBOARD_ENABLED) {
     startDashboard({
@@ -57,18 +68,28 @@ async function main() {
       initDataTtlSeconds: INIT_DATA_TTL_SECONDS,
       telegramWebhookPath: TELEGRAM_WEBHOOK_PATH,
       onTelegramUpdate: async (update) => {
-        await handleUpdate(update, db, emailOctopus);
+        await handleUpdate(update, db, emailOctopus, googleSheets);
       },
       onEmailCaptured: async (contact) => {
-        return syncToEmailOctopus(emailOctopus, contact);
+        const result = await syncSignupServices(emailOctopus, googleSheets, contact);
+        await notifyAdminAboutSignup({
+          telegram_id: contact.telegramId,
+          username: contact.username,
+          first_name: contact.firstName,
+          last_name: contact.lastName,
+          email: contact.email,
+          country: contact.country,
+          source: contact.source
+        }, contact.method, result);
+        return result;
       }
     });
   }
 
-  await startBot(db, emailOctopus);
+  await startBot(db, emailOctopus, googleSheets);
 }
 
-async function startBot(db, emailOctopus) {
+async function startBot(db, emailOctopus, googleSheets) {
   console.log("Bot is starting...");
 
   if (PUBLIC_BASE_URL) {
@@ -89,7 +110,7 @@ async function startBot(db, emailOctopus) {
 
       for (const update of updates) {
         lastUpdateId = update.update_id;
-        await handleUpdate(update, db, emailOctopus);
+        await handleUpdate(update, db, emailOctopus, googleSheets);
       }
     } catch (error) {
       console.error("Polling error:", error.message);
@@ -101,7 +122,7 @@ async function startBot(db, emailOctopus) {
   }
 }
 
-async function handleUpdate(update, db, emailOctopus) {
+async function handleUpdate(update, db, emailOctopus, googleSheets) {
   const message = update.message;
   if (!message || !message.chat) {
     return;
@@ -119,6 +140,17 @@ async function handleUpdate(update, db, emailOctopus) {
   if (!text) {
     await sendMessage(message.chat.id, "Пожалуйста, отправляйте текстовые сообщения. Для начала используйте /start.");
     return;
+  }
+
+  if (!isAdminChat(message.chat.id)) {
+    const rateLimit = chatRateLimiter.check(String(message.from.id));
+    if (!rateLimit.ok) {
+      await sendMessage(
+        message.chat.id,
+        `Слишком много сообщений за короткое время. Подождите ${rateLimit.retryAfterSeconds} сек. и попробуйте снова.`
+      );
+      return;
+    }
   }
 
   const command = parseCommand(text);
@@ -148,12 +180,17 @@ async function handleUpdate(update, db, emailOctopus) {
   }
 
   if (command?.name === "/delete") {
-    await handleDelete(message, db, emailOctopus);
+    await handleDelete(message, db, emailOctopus, googleSheets);
     return;
   }
 
   if (command?.name === "/privacy") {
     await handlePrivacy(message.chat.id);
+    return;
+  }
+
+  if (command?.name === "/mydata") {
+    await handleMyData(message, db);
     return;
   }
 
@@ -163,7 +200,7 @@ async function handleUpdate(update, db, emailOctopus) {
   }
 
   if (command?.name === "/skip") {
-    await handleSkip(message, db, emailOctopus);
+    await handleSkip(message, db, emailOctopus, googleSheets);
     return;
   }
 
@@ -172,7 +209,7 @@ async function handleUpdate(update, db, emailOctopus) {
     return;
   }
 
-  await handleText(message, db, emailOctopus);
+  await handleText(message, db, emailOctopus, googleSheets);
 }
 
 async function handleStart(message, db, startPayload = "") {
@@ -236,7 +273,7 @@ async function handleStart(message, db, startPayload = "") {
   );
 }
 
-async function handleText(message, db, emailOctopus) {
+async function handleText(message, db, emailOctopus, googleSheets) {
   const userId = String(message.from.id);
   const record = await db.getUser(userId);
 
@@ -273,14 +310,14 @@ async function handleText(message, db, emailOctopus) {
       return;
     }
 
-    await completeSignup(message.chat.id, db, emailOctopus, record, country, "chat");
+    await completeSignup(message, db, emailOctopus, googleSheets, record, country, "chat");
     return;
   }
 
   await sendMessage(message.chat.id, "Если хотите обновить email или страну, отправьте /start.");
 }
 
-async function handleSkip(message, db, emailOctopus) {
+async function handleSkip(message, db, emailOctopus, googleSheets) {
   const userId = String(message.from.id);
   const record = await db.getUser(userId);
 
@@ -289,10 +326,11 @@ async function handleSkip(message, db, emailOctopus) {
     return;
   }
 
-  await completeSignup(message.chat.id, db, emailOctopus, record, record.country || "", "chat");
+  await completeSignup(message, db, emailOctopus, googleSheets, record, record.country || "", "chat");
 }
 
-async function completeSignup(chatId, db, emailOctopus, record, country, method) {
+async function completeSignup(message, db, emailOctopus, googleSheets, record, country, method) {
+  const chatId = message.chat.id;
   if (!record?.email) {
     await sendMessage(chatId, "Не удалось завершить сохранение. Пожалуйста, отправьте /start и попробуйте ещё раз.");
     return;
@@ -306,21 +344,25 @@ async function completeSignup(chatId, db, emailOctopus, record, country, method)
     updated_at: nowIso()
   });
 
-  const syncResult = await syncToEmailOctopus(emailOctopus, {
+  const syncPayload = {
+    telegramId: updated.telegram_id,
+    username: updated.username,
     email: updated.email,
     firstName: updated.first_name,
     lastName: updated.last_name,
     country: updated.country,
     source: updated.source,
     method
-  });
+  };
+  const syncResult = await syncSignupServices(emailOctopus, googleSheets, syncPayload);
+  await notifyAdminAboutSignup(updated, method, syncResult);
 
   if (syncResult.ok) {
     await sendMessage(
       chatId,
       updated.country
-        ? `Готово. Я сохранил ваш email и страну: ${updated.country}. Если захотите обновить данные позже, отправьте /start.`
-        : "Готово. Я сохранил ваш email. Если захотите позже добавить или изменить страну, отправьте /start."
+        ? `Готово. Я сохранил ваш email и страну: ${updated.country}. ${NEWSLETTER_SCHEDULE_TEXT} Если захотите обновить данные позже, отправьте /start.`
+        : `Готово. Я сохранил ваш email. ${NEWSLETTER_SCHEDULE_TEXT} Если захотите позже добавить или изменить страну, отправьте /start.`
     );
     return;
   }
@@ -413,7 +455,31 @@ async function handleCount(chatId, db) {
   await sendMessage(chatId, `Сохранённых email: ${withEmail.length}`);
 }
 
-async function handleDelete(message, db, emailOctopus) {
+async function handleMyData(message, db) {
+  const userId = String(message.from.id);
+  const record = await db.getUser(userId);
+
+  if (!record) {
+    await sendMessage(message.chat.id, "У меня пока нет сохранённых данных для этого чата. Чтобы начать, отправьте /start.");
+    return;
+  }
+
+  const lines = [
+    "Вот что сейчас сохранено:",
+    `Telegram ID: ${record.telegram_id || userId}`,
+    `Имя: ${displayName(record) || "не указано"}`,
+    `Username: ${record.username ? `@${record.username}` : "не указан"}`,
+    `Email: ${record.email || "не указан"}`,
+    `Страна: ${record.country || "не указана"}`,
+    `Источник: ${record.source || "direct"}`,
+    `Статус: ${translateState(record.state)}`,
+    `Обновлено: ${record.updated_at || "неизвестно"}`
+  ];
+
+  await sendMessage(message.chat.id, lines.join("\n"));
+}
+
+async function handleDelete(message, db, emailOctopus, googleSheets) {
   const userId = String(message.from.id);
   const record = await db.getUser(userId);
 
@@ -426,6 +492,8 @@ async function handleDelete(message, db, emailOctopus) {
   if (record.email) {
     unsubscribeResult = await unsubscribeFromEmailOctopus(emailOctopus, {
       email: record.email,
+      telegramId: record.telegram_id,
+      username: record.username,
       firstName: record.first_name,
       lastName: record.last_name,
       country: record.country,
@@ -433,6 +501,8 @@ async function handleDelete(message, db, emailOctopus) {
       method: "chat"
     });
   }
+
+  await appendDeletionToGoogleSheets(googleSheets, record);
 
   await db.deleteUser(userId);
 
@@ -493,6 +563,7 @@ async function sendHelp(chatId) {
     [
       "/start - начать или заново пройти подписку",
       "/help - показать помощь",
+      "/mydata - показать, какие данные сейчас сохранены",
       "/privacy - как используются ваши данные",
       "/delete - удалить сохранённые данные",
       "/skip - пропустить шаг со страной",
@@ -632,6 +703,12 @@ async function syncToEmailOctopus(client, contact) {
   return result;
 }
 
+async function syncSignupServices(emailOctopusClient, googleSheetsClient, contact) {
+  const emailOctopusResult = await syncToEmailOctopus(emailOctopusClient, contact);
+  await appendSignupToGoogleSheets(googleSheetsClient, contact);
+  return emailOctopusResult;
+}
+
 async function unsubscribeFromEmailOctopus(client, contact) {
   if (!client) {
     return { ok: true, skipped: true };
@@ -643,6 +720,91 @@ async function unsubscribeFromEmailOctopus(client, contact) {
   }
 
   return result;
+}
+
+async function appendSignupToGoogleSheets(client, contact) {
+  if (!client) {
+    return { ok: true, skipped: true };
+  }
+
+  try {
+    const result = await client.appendEvent({
+      timestamp: nowIso(),
+      eventType: "signup",
+      telegramId: contact.telegramId,
+      username: contact.username,
+      firstName: contact.firstName,
+      lastName: contact.lastName,
+      email: contact.email,
+      country: contact.country,
+      source: contact.source,
+      method: contact.method
+    });
+
+    if (!result.ok) {
+      console.error("Google Sheets signup backup failed:", result.status || "UNKNOWN");
+    }
+
+    return result;
+  } catch (error) {
+    console.error("Google Sheets signup backup failed:", error.message);
+    return { ok: false, error };
+  }
+}
+
+async function appendDeletionToGoogleSheets(client, record) {
+  if (!client || !record?.email) {
+    return { ok: true, skipped: true };
+  }
+
+  try {
+    const result = await client.appendEvent({
+      timestamp: nowIso(),
+      eventType: "delete",
+      telegramId: record.telegram_id,
+      username: record.username,
+      firstName: record.first_name,
+      lastName: record.last_name,
+      email: record.email,
+      country: record.country,
+      source: record.source,
+      method: "chat"
+    });
+
+    if (!result.ok) {
+      console.error("Google Sheets delete backup failed:", result.status || "UNKNOWN");
+    }
+
+    return result;
+  } catch (error) {
+    console.error("Google Sheets delete backup failed:", error.message);
+    return { ok: false, error };
+  }
+}
+
+async function notifyAdminAboutSignup(record, method, syncResult) {
+  if (!ADMIN_SIGNUP_ALERTS || !ADMIN_CHAT_ID || !record?.email) {
+    return;
+  }
+
+  const lines = [
+    "Новая или обновлённая подписка:",
+    `Email: ${record.email}`,
+    `Страна: ${record.country || "не указана"}`,
+    `Источник: ${record.source || "direct"}`,
+    `Метод: ${method}`,
+    `Пользователь: ${displayName(record) || "без имени"}${record.username ? ` (@${record.username})` : ""}`
+  ];
+
+  if (!syncResult.ok) {
+    lines.push(`Синхронизация с рассылкой: ошибка (${syncResult.message || "без деталей"})`);
+  }
+
+  try {
+    await sendMessage(ADMIN_CHAT_ID, lines.join("\n"));
+  } catch (error) {
+    console.error("Admin signup alert failed:", error.message);
+  }
 }
 
 function countByField(users, selector) {
@@ -658,6 +820,23 @@ function formatBreakdown(counts) {
   return Object.entries(counts)
     .sort((left, right) => right[1] - left[1])
     .map(([label, count]) => `${label}: ${count}`);
+}
+
+function displayName(record) {
+  return [record?.first_name, record?.last_name].filter(Boolean).join(" ");
+}
+
+function translateState(state) {
+  if (state === "awaiting_email") {
+    return "ожидается email";
+  }
+  if (state === "awaiting_country") {
+    return "ожидается страна";
+  }
+  if (state === "complete") {
+    return "подписка завершена";
+  }
+  return state || "неизвестно";
 }
 
 function isAdminChat(chatId) {

@@ -19,9 +19,14 @@ Bots cannot automatically message every subscriber in a channel or see a full su
 - Source tracking using the `/start` payload
 - Local admin dashboard with CSV download
 - Telegram Mini App email form
+- Required consent checkbox in the Mini App
 - Privacy and delete-data commands
+- `/mydata` command for users
 - Admin stats and promo commands
+- Admin Telegram alerts for new or updated signups
+- Simple rate limiting for chat and Mini App submissions
 - EmailOctopus sync for successful signups
+- Google Sheets backup sync for signup/delete events
 - Admin-only `/export` command that points you to the dashboard
 - No external npm dependencies
 
@@ -35,6 +40,7 @@ Bots cannot automatically message every subscriber in a channel or see a full su
 BOT_TOKEN=your_bot_token
 BOT_USERNAME=your_bot_username
 ADMIN_CHAT_ID=your_numeric_telegram_chat_id
+ADMIN_SIGNUP_ALERTS=true
 DATABASE_URL=
 DATABASE_FILE=./data/bot.sqlite
 EXPORT_DIR=./exports
@@ -45,10 +51,19 @@ DASHBOARD_TOKEN=replace-with-a-secret-token
 PUBLIC_BASE_URL=https://your-public-domain.example
 INIT_DATA_TTL_SECONDS=3600
 TELEGRAM_WEBHOOK_SECRET=replace-with-a-long-random-secret
+RATE_LIMIT_WINDOW_SECONDS=60
+RATE_LIMIT_MAX_MESSAGES=12
+RATE_LIMIT_SUBMISSION_WINDOW_SECONDS=600
+RATE_LIMIT_MAX_SUBMISSIONS=5
+NEWSLETTER_SCHEDULE_TEXT=Следующее письмо обычно приходит по пятницам.
 EMAILOCTOPUS_API_KEY=
 EMAILOCTOPUS_LIST_ID=
 EMAILOCTOPUS_STATUS=SUBSCRIBED
-EMAILOCTOPUS_TAGS=telegram,channel
+EMAILOCTOPUS_COUNTRY_FIELD=Country
+GOOGLE_SHEETS_SPREADSHEET_ID=
+GOOGLE_SHEETS_SHEET_NAME=Signups
+GOOGLE_SHEETS_SERVICE_ACCOUNT_EMAIL=
+GOOGLE_SHEETS_PRIVATE_KEY=
 ```
 
 If `DATABASE_URL` is set, the app uses Postgres. If it is empty, it falls back to SQLite in `DATABASE_FILE`.
@@ -89,6 +104,7 @@ That `channel` payload is stored as `source` in the database, so you can tell wh
 
 - `/start` starts or restarts the signup flow
 - `/help` shows help
+- `/mydata` shows the saved local data for the current Telegram user
 - `/privacy` explains how data is used
 - `/delete` deletes the user’s saved local signup data
 - `/stats` shows admin signup stats
@@ -101,6 +117,7 @@ That `channel` payload is stored as `source` in the database, so you can tell wh
 - The dashboard runs in the same process as the bot.
 - Set `DASHBOARD_ENABLED=false` if you only want the Telegram bot.
 - It shows totals, collected emails, and a CSV download link.
+- The dashboard supports `country` and `source` filters, and filtered exports.
 - Access is protected by the `token` query parameter from `DASHBOARD_TOKEN`.
 - Routes:
 
@@ -115,21 +132,35 @@ That `channel` payload is stored as `source` in the database, so you can tell wh
 
 - The Mini App is served from `/mini-app`.
 - It posts email submissions to `/api/mini-app/submit`.
+- It now requires an explicit consent checkbox before submit.
 - The bot only shows the Web App button when `PUBLIC_BASE_URL` is set.
 - For real Telegram use, the URL must be publicly reachable over HTTPS.
 - The plain text email flow still works as a fallback.
 - The success state now hides the form and confirms the signup inside Telegram.
+- The success state can mention your usual newsletter schedule via `NEWSLETTER_SCHEDULE_TEXT`.
 - The current production setup trusts Telegram Mini App user data from inside Telegram rather than enforcing strict server-side signature validation.
+- The Mini App uses in-memory rate limiting to reduce repeated spam submits.
 
 ## EmailOctopus
 
 - The bot can sync captured emails directly into an existing EmailOctopus list.
 - Set `EMAILOCTOPUS_API_KEY` and `EMAILOCTOPUS_LIST_ID` to enable it.
 - `EMAILOCTOPUS_STATUS` defaults to `SUBSCRIBED`.
-- `EMAILOCTOPUS_TAGS` accepts comma-separated tags such as `telegram,channel`.
 - Existing contacts are updated using EmailOctopus's list contact update endpoint keyed by the MD5 hash of the lowercase email address.
-- The bot also adds dynamic tags such as `source-channel` or `method-mini_app`.
+- The bot now writes only the `telegram` tag.
+- Country is sent as an EmailOctopus contact field using `EMAILOCTOPUS_COUNTRY_FIELD` (default: `Country`).
 - `/delete` attempts to unsubscribe the stored email from EmailOctopus before removing local data.
+
+## Google Sheets Backup
+
+- The bot can append signup and delete events to Google Sheets as a best-effort backup.
+- Set `GOOGLE_SHEETS_SPREADSHEET_ID`, `GOOGLE_SHEETS_SHEET_NAME`, `GOOGLE_SHEETS_SERVICE_ACCOUNT_EMAIL`, and `GOOGLE_SHEETS_PRIVATE_KEY`.
+- The service account needs edit access to the target spreadsheet.
+- Rows are appended in this order:
+
+```text
+timestamp,event_type,telegram_id,username,first_name,last_name,email,country,source,method
+```
 
 ## Privacy
 
@@ -195,5 +226,5 @@ It also includes a Render Blueprint at [`render.yaml`](/Users/yarik/Code/telegra
 - Postgres support uses the `pg` package, so run `npm install` before starting the app after pulling these changes.
 - Data stays local on your machine unless you deploy it elsewhere.
 - Add a proper privacy notice if you plan to collect emails from the public.
-- Mini App submissions now validate Telegram `initData` server-side before trusting the user identity.
+- Google Sheets backup uses a Google service account and the Sheets API.
 - Railway config-as-code currently covers deployment settings for one service; the Postgres service itself is still created in Railway, not from `railway.json`.

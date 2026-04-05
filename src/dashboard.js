@@ -1,9 +1,17 @@
 import { createServer } from "node:http";
 import path from "node:path";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { createRateLimiter } from "./rate-limit.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const COUNTRY_REGEX = /^[A-Za-z][A-Za-z .,'-]{1,79}$/;
+const NEWSLETTER_SCHEDULE_TEXT = process.env.NEWSLETTER_SCHEDULE_TEXT || "Следующее письмо обычно приходит по пятницам.";
+const MINI_APP_RATE_LIMIT_WINDOW_SECONDS = Number(process.env.RATE_LIMIT_SUBMISSION_WINDOW_SECONDS || 600);
+const MINI_APP_RATE_LIMIT_MAX_HITS = Number(process.env.RATE_LIMIT_MAX_SUBMISSIONS || 5);
+const miniAppSubmitRateLimiter = createRateLimiter({
+  windowMs: MINI_APP_RATE_LIMIT_WINDOW_SECONDS * 1000,
+  maxHits: MINI_APP_RATE_LIMIT_MAX_HITS
+});
 
 export function startDashboard({
   db,
@@ -59,6 +67,7 @@ async function handleRequest(
     const requestUrl = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
     const normalizedPath = normalizePath(requestUrl.pathname);
     const routeIsPublic = isPublicRoute(request.method, requestUrl.pathname);
+    const filters = extractFilters(requestUrl.searchParams);
 
     if (request.method === "POST" && normalizedPath === normalizePath(telegramWebhookPath)) {
       const update = await readJsonBody(request);
@@ -78,15 +87,18 @@ async function handleRequest(
     }
 
     if (request.method === "GET" && normalizedPath === "/api/users") {
+      const users = applyUserFilters(await db.listUsers(), filters);
       respondJson(response, 200, {
         stats: await db.getStats(),
-        users: await db.listUsers()
+        filters,
+        filtered_count: users.length,
+        users
       });
       return;
     }
 
     if (request.method === "GET" && normalizedPath === "/export.csv") {
-      const users = (await db.listUsers()).filter((user) => user.email);
+      const users = applyUserFilters(await db.listUsers(), filters).filter((user) => user.email);
       const exportPath = writeCsvExport(users, exportDir);
       const csv = buildCsv(users);
 
@@ -114,7 +126,7 @@ async function handleRequest(
     }
 
     if (request.method === "GET" && normalizedPath === "/") {
-      respondHtml(response, await renderDashboard(db, token));
+      respondHtml(response, await renderDashboard(db, token, filters));
       return;
     }
 
@@ -149,9 +161,11 @@ export async function readJsonBody(request) {
   });
 }
 
-async function renderDashboard(db, token) {
+async function renderDashboard(db, token, filters) {
   const stats = await db.getStats();
-  const users = (await db.listUsers()).filter((user) => user.email);
+  const allUsers = (await db.listUsers()).filter((user) => user.email);
+  const users = applyUserFilters(allUsers, filters);
+  const filterQuery = buildFilterQuery(filters);
 
   const rows = users.map((user) => `
     <tr>
@@ -302,10 +316,31 @@ async function renderDashboard(db, token) {
           <span class="label">Запусков из канала</span>
           <strong class="value">${stats.channel_count}</strong>
         </article>
+        <article class="card">
+          <span class="label">Показано сейчас</span>
+          <strong class="value">${users.length}</strong>
+        </article>
+      </section>
+      <section class="card" style="margin-bottom: 24px;">
+        <form method="get" style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));align-items:end;">
+          <input type="hidden" name="token" value="${escapeHtml(token)}">
+          <label>
+            <span class="label">Фильтр по стране</span>
+            <input name="country" value="${escapeHtml(filters.country)}" placeholder="Например, Germany" style="width:100%;padding:12px 14px;border-radius:14px;border:1px solid var(--line);font:inherit;background:#fffdf9;">
+          </label>
+          <label>
+            <span class="label">Фильтр по источнику</span>
+            <input name="source" value="${escapeHtml(filters.source)}" placeholder="Например, channel" style="width:100%;padding:12px 14px;border-radius:14px;border:1px solid var(--line);font:inherit;background:#fffdf9;">
+          </label>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            <button type="submit" style="border:0;border-radius:999px;padding:12px 18px;font:inherit;color:#fffaf5;background:var(--accent);cursor:pointer;">Применить фильтры</button>
+            <a class="button ghost" href="/?token=${encodeURIComponent(token)}">Сбросить</a>
+          </div>
+        </form>
       </section>
       <section class="actions">
-        <a class="button" href="/export.csv?token=${encodeURIComponent(token)}">Скачать CSV</a>
-        <a class="button ghost" href="/api/users?token=${encodeURIComponent(token)}">Открыть JSON</a>
+        <a class="button" href="/export.csv?token=${encodeURIComponent(token)}${filterQuery}">Скачать CSV</a>
+        <a class="button ghost" href="/api/users?token=${encodeURIComponent(token)}${filterQuery}">Открыть JSON</a>
       </section>
       <section class="table-wrap">
         <table>
@@ -321,7 +356,7 @@ async function renderDashboard(db, token) {
             </tr>
           </thead>
           <tbody>
-            ${rows || `<tr><td class="empty" colspan="7">Пока нет сохранённых email.</td></tr>`}
+            ${rows || `<tr><td class="empty" colspan="7">Ни одна запись не подходит под текущие фильтры.</td></tr>`}
           </tbody>
         </table>
       </section>
@@ -438,12 +473,16 @@ function renderMiniApp() {
           <input id="email" name="email" type="email" autocomplete="email" placeholder="name@example.com" required>
           <label for="country">Страна</label>
           <input id="country" name="country" type="text" autocomplete="country-name" placeholder="Например, Russia">
+          <label style="display:flex;gap:10px;align-items:flex-start;margin:4px 0 14px;">
+            <input id="consent" name="consent" type="checkbox" required style="width:auto;margin:3px 0 0;">
+            <span>Я согласен(на), что владелец канала может хранить мой email и страну для новостей и связи.</span>
+          </label>
           <button type="submit">Сохранить данные</button>
         </form>
         <p id="note" class="note">Отправляя форму, вы соглашаетесь, что владелец канала может хранить ваш email и страну для связи и рассылки новостей.</p>
         <section id="success-panel" class="success-panel">
           <strong>Готово, вы в списке.</strong>
-          <p>Окно можно закрыть. Если захотите удалить данные позже, отправьте боту <strong>/delete</strong>.</p>
+          <p>${escapeHtml(NEWSLETTER_SCHEDULE_TEXT)} Окно можно закрыть. Если захотите удалить данные позже, отправьте боту <strong>/delete</strong>.</p>
         </section>
         <div id="message" class="message"></div>
       </section>
@@ -461,12 +500,14 @@ function renderMiniApp() {
       const successPanel = document.getElementById("success-panel");
       const emailInput = document.getElementById("email");
       const countryInput = document.getElementById("country");
+      const consentInput = document.getElementById("consent");
 
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
 
         const email = emailInput.value.trim();
         const country = countryInput.value.trim();
+        const consent = consentInput.checked;
         const initData = webApp?.initData || "";
 
         if (!initData) {
@@ -481,6 +522,7 @@ function renderMiniApp() {
             body: JSON.stringify({
               email,
               country,
+              consent,
               init_data: initData,
               user: webApp?.initDataUnsafe?.user || null,
               source: webApp?.initDataUnsafe?.start_param || null
@@ -633,10 +675,18 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
     const payload = await readJsonBody(request);
     const email = String(payload.email || "").trim().toLowerCase();
     const country = normalizeCountry(payload.country || "");
+    const consent = payload.consent === true;
     const user = payload.user || null;
 
     if (!user?.id) {
       respondJson(response, 400, { error: "Не удалось определить пользователя Telegram." });
+      return;
+    }
+
+    const telegramId = String(user.id);
+    const rateLimit = miniAppSubmitRateLimiter.check(`${telegramId}:${getRequestIp(request)}`);
+    if (!rateLimit.ok) {
+      respondJson(response, 429, { error: `Слишком много попыток отправки. Подождите ${rateLimit.retryAfterSeconds} сек. и попробуйте снова.` });
       return;
     }
 
@@ -645,12 +695,16 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
       return;
     }
 
+    if (!consent) {
+      respondJson(response, 400, { error: "Нужно подтвердить согласие на хранение данных перед отправкой формы." });
+      return;
+    }
+
     if (country && !isValidCountry(country)) {
       respondJson(response, 400, { error: "Пожалуйста, укажите страну только на английском. Например: Russia или Germany." });
       return;
     }
 
-    const telegramId = String(user.id);
     const existing = await db.getUser(telegramId);
     const now = new Date().toISOString();
     const source = String(payload.source || existing?.source || "mini_app");
@@ -670,6 +724,8 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
     });
 
     const syncResult = await onEmailCaptured({
+      telegramId,
+      username: String(user.username || existing?.username || ""),
       email,
       firstName: String(user.first_name || existing?.first_name || ""),
       lastName: String(user.last_name || existing?.last_name || ""),
@@ -711,12 +767,49 @@ function isAuthorized(requestUrl, token) {
   return requestUrl.searchParams.get("token") === token;
 }
 
+function extractFilters(searchParams) {
+  return {
+    country: String(searchParams.get("country") || "").trim(),
+    source: String(searchParams.get("source") || "").trim()
+  };
+}
+
+function applyUserFilters(users, filters) {
+  return users.filter((user) => {
+    const matchesCountry = !filters.country || String(user.country || "").toLowerCase() === filters.country.toLowerCase();
+    const matchesSource = !filters.source || String(user.source || "").toLowerCase() === filters.source.toLowerCase();
+    return matchesCountry && matchesSource;
+  });
+}
+
+function buildFilterQuery(filters) {
+  const searchParams = new URLSearchParams();
+  if (filters.country) {
+    searchParams.set("country", filters.country);
+  }
+  if (filters.source) {
+    searchParams.set("source", filters.source);
+  }
+
+  const query = searchParams.toString();
+  return query ? `&${query}` : "";
+}
+
 function normalizeCountry(value) {
   return String(value || "").trim().replace(/\s+/g, " ");
 }
 
 function isValidCountry(value) {
   return COUNTRY_REGEX.test(value);
+}
+
+function getRequestIp(request) {
+  const forwardedFor = String(request.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  if (forwardedFor) {
+    return forwardedFor;
+  }
+
+  return String(request.socket?.remoteAddress || "unknown");
 }
 
 function escapeHtml(value) {
