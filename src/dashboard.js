@@ -593,8 +593,8 @@ function verifyTelegramInitData(initData, botToken, initDataTtlSeconds) {
 
   const dataCheckString = pairs.join("\n");
   const secretKey = crypto
-    .createHmac("sha256", "WebAppData")
-    .update(botToken)
+    .createHmac("sha256", botToken)
+    .update("WebAppData")
     .digest();
   const expectedHash = crypto
     .createHmac("sha256", secretKey)
