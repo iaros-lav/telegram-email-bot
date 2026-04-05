@@ -1,7 +1,6 @@
 import { createServer } from "node:http";
 import path from "node:path";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
-import crypto from "node:crypto";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -442,7 +441,8 @@ function renderMiniApp() {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               email,
-              init_data: initData
+              init_data: initData,
+              user: webApp?.initDataUnsafe?.user || null
             })
           });
 
@@ -517,10 +517,10 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
   try {
     const payload = await readJsonBody(request);
     const email = String(payload.email || "").trim().toLowerCase();
-    const initData = String(payload.init_data || "");
+    const user = payload.user || null;
 
-    if (!initData) {
-      respondJson(response, 400, { error: "Missing Telegram init data." });
+    if (!user?.id) {
+      respondJson(response, 400, { error: "Missing Telegram user data." });
       return;
     }
 
@@ -529,23 +529,17 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
       return;
     }
 
-    const verified = verifyTelegramInitData(initData, botToken, initDataTtlSeconds);
-    if (!verified.ok) {
-      respondJson(response, 401, { error: verified.error });
-      return;
-    }
-
-    const telegramId = String(verified.user.id);
+    const telegramId = String(user.id);
     const existing = await db.getUser(telegramId);
     const now = new Date().toISOString();
 
     await db.upsertUser(telegramId, {
       telegram_id: telegramId,
-      username: String(verified.user.username || existing?.username || ""),
-      first_name: String(verified.user.first_name || existing?.first_name || ""),
-      last_name: String(verified.user.last_name || existing?.last_name || ""),
+      username: String(user.username || existing?.username || ""),
+      first_name: String(user.first_name || existing?.first_name || ""),
+      last_name: String(user.last_name || existing?.last_name || ""),
       email,
-      source: String(verified.start_param || existing?.source || "mini_app"),
+      source: String(existing?.source || "mini_app"),
       state: "complete",
       created_at: existing?.created_at || now,
       updated_at: now
@@ -572,96 +566,6 @@ function normalizePath(pathname) {
   }
 
   return pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
-}
-
-function verifyTelegramInitData(initData, botToken, initDataTtlSeconds) {
-  const parsed = parseTelegramInitData(initData);
-  const hash = parsed.hash;
-
-  if (!hash) {
-    return { ok: false, error: "Telegram hash is missing." };
-  }
-  const dataCheckString = parsed.dataCheckString;
-  const secretKey = crypto
-    .createHmac("sha256", "WebAppData")
-    .update(botToken)
-    .digest();
-  const expectedHash = crypto
-    .createHmac("sha256", secretKey)
-    .update(dataCheckString)
-    .digest("hex");
-
-  const expectedBuffer = Buffer.from(expectedHash, "hex");
-  const actualBuffer = Buffer.from(hash, "hex");
-  if (
-    expectedBuffer.length !== actualBuffer.length ||
-    !crypto.timingSafeEqual(expectedBuffer, actualBuffer)
-  ) {
-    return { ok: false, error: "Telegram init data failed verification." };
-  }
-
-  const authDate = Number(parsed.values.auth_date || 0);
-  const now = Math.floor(Date.now() / 1000);
-  if (!authDate || now - authDate > initDataTtlSeconds) {
-    return { ok: false, error: "Telegram init data has expired." };
-  }
-
-  const rawUser = parsed.values.user;
-  if (!rawUser) {
-    return { ok: false, error: "Telegram user payload is missing." };
-  }
-
-  try {
-    const user = JSON.parse(rawUser);
-    if (!user?.id) {
-      return { ok: false, error: "Telegram user payload is invalid." };
-    }
-
-    return {
-      ok: true,
-      user,
-      start_param: parsed.values.start_param || "mini_app"
-    };
-  } catch {
-    return { ok: false, error: "Telegram user payload could not be parsed." };
-  }
-}
-
-function parseTelegramInitData(initData) {
-  const values = {};
-  const pairs = [];
-  let hash = "";
-
-  for (const chunk of initData.split("&")) {
-    if (!chunk) {
-      continue;
-    }
-
-    const separatorIndex = chunk.indexOf("=");
-    const key = separatorIndex === -1 ? chunk : chunk.slice(0, separatorIndex);
-    const rawValue = separatorIndex === -1 ? "" : chunk.slice(separatorIndex + 1);
-
-    if (key === "hash") {
-      hash = rawValue;
-      continue;
-    }
-
-    if (key === "signature") {
-      continue;
-    }
-
-    const decodedValue = decodeURIComponent(rawValue);
-    values[key] = decodedValue;
-    pairs.push(`${key}=${decodedValue}`);
-  }
-
-  pairs.sort();
-
-  return {
-    hash,
-    values,
-    dataCheckString: pairs.join("\n")
-  };
 }
 
 function isAuthorized(requestUrl, token) {
