@@ -143,16 +143,12 @@ function buildTags(baseTags, { source, method, country }) {
   const dynamicTags = [];
   const safeSource = sanitizeTag(source);
   const safeMethod = sanitizeTag(method);
-  const safeCountry = sanitizeTag(country);
 
   if (safeSource) {
     dynamicTags.push(`source-${safeSource}`);
   }
   if (safeMethod) {
     dynamicTags.push(`method-${safeMethod}`);
-  }
-  if (safeCountry) {
-    dynamicTags.push(`country-${safeCountry}`);
   }
 
   return [...new Set([...baseTags, ...dynamicTags])];
@@ -161,7 +157,7 @@ function buildTags(baseTags, { source, method, country }) {
 function sanitizeTag(value) {
   return String(value)
     .toLowerCase()
-    .replaceAll(/[^\p{L}\p{N}_-]+/gu, "-")
+    .replaceAll(/[^a-z0-9_-]+/g, "-")
     .replaceAll(/-+/g, "-")
     .replaceAll(/^-|-$/g, "");
 }
