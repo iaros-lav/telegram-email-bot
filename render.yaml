@@ -1,0 +1,35 @@
+services:
+  - name: telegram-email-bot
+    type: web
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: BOT_USERNAME
+        sync: false
+      - key: ADMIN_CHAT_ID
+        sync: false
+      - key: DASHBOARD_ENABLED
+        value: "true"
+      - key: DASHBOARD_HOST
+        value: "0.0.0.0"
+      - key: DASHBOARD_TOKEN
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: INIT_DATA_TTL_SECONDS
+        value: "3600"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: telegram-email-bot-db
+          property: connectionString
+
+databases:
+  - name: telegram-email-bot-db
+    plan: free
+    region: oregon
+    postgresMajorVersion: "17"
