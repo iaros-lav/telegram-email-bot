@@ -575,23 +575,13 @@ function normalizePath(pathname) {
 }
 
 function verifyTelegramInitData(initData, botToken, initDataTtlSeconds) {
-  const params = new URLSearchParams(initData);
-  const hash = params.get("hash");
+  const parsed = parseTelegramInitData(initData);
+  const hash = parsed.hash;
 
   if (!hash) {
     return { ok: false, error: "Telegram hash is missing." };
   }
-
-  params.delete("hash");
-  params.delete("signature");
-
-  const pairs = [];
-  for (const [key, value] of params.entries()) {
-    pairs.push(`${key}=${value}`);
-  }
-  pairs.sort();
-
-  const dataCheckString = pairs.join("\n");
+  const dataCheckString = parsed.dataCheckString;
   const secretKey = crypto
     .createHmac("sha256", "WebAppData")
     .update(botToken)
@@ -610,13 +600,13 @@ function verifyTelegramInitData(initData, botToken, initDataTtlSeconds) {
     return { ok: false, error: "Telegram init data failed verification." };
   }
 
-  const authDate = Number(params.get("auth_date") || 0);
+  const authDate = Number(parsed.values.auth_date || 0);
   const now = Math.floor(Date.now() / 1000);
   if (!authDate || now - authDate > initDataTtlSeconds) {
     return { ok: false, error: "Telegram init data has expired." };
   }
 
-  const rawUser = params.get("user");
+  const rawUser = parsed.values.user;
   if (!rawUser) {
     return { ok: false, error: "Telegram user payload is missing." };
   }
@@ -630,11 +620,48 @@ function verifyTelegramInitData(initData, botToken, initDataTtlSeconds) {
     return {
       ok: true,
       user,
-      start_param: params.get("start_param") || "mini_app"
+      start_param: parsed.values.start_param || "mini_app"
     };
   } catch {
     return { ok: false, error: "Telegram user payload could not be parsed." };
   }
+}
+
+function parseTelegramInitData(initData) {
+  const values = {};
+  const pairs = [];
+  let hash = "";
+
+  for (const chunk of initData.split("&")) {
+    if (!chunk) {
+      continue;
+    }
+
+    const separatorIndex = chunk.indexOf("=");
+    const key = separatorIndex === -1 ? chunk : chunk.slice(0, separatorIndex);
+    const rawValue = separatorIndex === -1 ? "" : chunk.slice(separatorIndex + 1);
+
+    if (key === "hash") {
+      hash = rawValue;
+      continue;
+    }
+
+    if (key === "signature") {
+      continue;
+    }
+
+    const decodedValue = decodeURIComponent(rawValue);
+    values[key] = decodedValue;
+    pairs.push(`${key}=${decodedValue}`);
+  }
+
+  pairs.sort();
+
+  return {
+    hash,
+    values,
+    dataCheckString: pairs.join("\n")
+  };
 }
 
 function isAuthorized(requestUrl, token) {
