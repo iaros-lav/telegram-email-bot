@@ -31,6 +31,7 @@ if (!BOT_TOKEN) {
 }
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const COUNTRY_REGEX = /^[A-Za-z][A-Za-z .,'-]{1,79}$/;
 let lastUpdateId = 0;
 
 main().catch((error) => {
@@ -267,7 +268,7 @@ async function handleText(message, db, emailOctopus) {
     if (!isValidCountry(country)) {
       await sendMessage(
         message.chat.id,
-        "Пожалуйста, укажите страну одним коротким сообщением. Например: Россия. Если хотите пропустить этот шаг, отправьте /skip."
+        "Пожалуйста, укажите страну только на английском. Например: Russia, Germany или United Kingdom. Если хотите пропустить этот шаг, отправьте /skip."
       );
       return;
     }
@@ -333,7 +334,8 @@ async function completeSignup(chatId, db, emailOctopus, record, country, method)
 async function promptCountry(chatId, currentCountry = "") {
   const lines = [
     "Теперь укажите вашу страну.",
-    "Например: Россия, Украина, Казахстан, Германия."
+    "Пожалуйста, пишите только на английском.",
+    "Например: Russia, Ukraine, Kazakhstan, Germany."
   ];
 
   if (currentCountry) {
@@ -552,7 +554,7 @@ function isValidEmail(value) {
 }
 
 function isValidCountry(value) {
-  return value.length >= 2 && value.length <= 80;
+  return COUNTRY_REGEX.test(value);
 }
 
 function nowIso() {

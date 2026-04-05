@@ -3,6 +3,7 @@ import path from "node:path";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const COUNTRY_REGEX = /^[A-Za-z][A-Za-z .,'-]{1,79}$/;
 
 export function startDashboard({
   db,
@@ -436,7 +437,7 @@ function renderMiniApp() {
           <label for="email">Email</label>
           <input id="email" name="email" type="email" autocomplete="email" placeholder="name@example.com" required>
           <label for="country">Страна</label>
-          <input id="country" name="country" type="text" autocomplete="country-name" placeholder="Например, Россия">
+          <input id="country" name="country" type="text" autocomplete="country-name" placeholder="Например, Russia">
           <button type="submit">Сохранить данные</button>
         </form>
         <p id="note" class="note">Отправляя форму, вы соглашаетесь, что владелец канала может хранить ваш email и страну для связи и рассылки новостей.</p>
@@ -645,7 +646,7 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
     }
 
     if (country && !isValidCountry(country)) {
-      respondJson(response, 400, { error: "Пожалуйста, укажите страну коротко, одним полем." });
+      respondJson(response, 400, { error: "Пожалуйста, укажите страну только на английском. Например: Russia или Germany." });
       return;
     }
 
@@ -715,7 +716,7 @@ function normalizeCountry(value) {
 }
 
 function isValidCountry(value) {
-  return value.length >= 2 && value.length <= 80;
+  return COUNTRY_REGEX.test(value);
 }
 
 function escapeHtml(value) {
