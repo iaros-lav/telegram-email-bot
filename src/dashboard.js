@@ -560,6 +560,7 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
 function isPublicRoute(method, pathname) {
   const normalizedPath = normalizePath(pathname);
   return (
+    (method === "GET" && normalizedPath === "/health") ||
     (method === "GET" && normalizedPath === "/mini-app") ||
     (method === "POST" && normalizedPath === "/api/mini-app/submit")
   );
