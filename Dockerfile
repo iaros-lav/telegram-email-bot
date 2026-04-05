@@ -7,7 +7,7 @@ COPY package-lock.json ./package-lock.json
 RUN npm ci --omit=dev
 
 COPY src ./src
-COPY data ./data
+RUN mkdir -p ./data ./exports
 
 ENV NODE_ENV=production
 ENV DASHBOARD_ENABLED=true
