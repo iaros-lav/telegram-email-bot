@@ -4,6 +4,7 @@ import path from "node:path";
 import process from "node:process";
 import { createStore } from "./db.js";
 import { startDashboard } from "./dashboard.js";
+import { createEmailOctopusClient } from "./emailoctopus.js";
 
 loadEnvFile();
 
@@ -40,6 +41,7 @@ async function main() {
     databaseFile: DATABASE_FILE,
     databaseUrl: DATABASE_URL
   });
+  const emailOctopus = createEmailOctopusClient();
 
   if (DASHBOARD_ENABLED) {
     startDashboard({
@@ -52,15 +54,18 @@ async function main() {
       initDataTtlSeconds: INIT_DATA_TTL_SECONDS,
       telegramWebhookPath: TELEGRAM_WEBHOOK_PATH,
       onTelegramUpdate: async (update) => {
-        await handleUpdate(update, db);
+        await handleUpdate(update, db, emailOctopus);
+      },
+      onEmailCaptured: async (contact) => {
+        return syncToEmailOctopus(emailOctopus, contact);
       }
     });
   }
 
-  await startBot(db);
+  await startBot(db, emailOctopus);
 }
 
-async function startBot(db) {
+async function startBot(db, emailOctopus) {
   console.log("Bot is starting...");
 
   if (PUBLIC_BASE_URL) {
@@ -73,7 +78,7 @@ async function startBot(db) {
 
   while (true) {
     try {
-      const updates = await api("getUpdates", {
+        const updates = await api("getUpdates", {
         offset: lastUpdateId + 1,
         timeout: 30,
         allowed_updates: ["message"]
@@ -81,7 +86,7 @@ async function startBot(db) {
 
       for (const update of updates) {
         lastUpdateId = update.update_id;
-        await handleUpdate(update, db);
+        await handleUpdate(update, db, emailOctopus);
       }
     } catch (error) {
       console.error("Polling error:", error.message);
@@ -93,7 +98,7 @@ async function startBot(db) {
   }
 }
 
-async function handleUpdate(update, db) {
+async function handleUpdate(update, db, emailOctopus) {
   const message = update.message;
   if (!message || !message.chat) {
     return;
@@ -128,7 +133,7 @@ async function handleUpdate(update, db) {
     return;
   }
 
-  await handleText(message, db);
+  await handleText(message, db, emailOctopus);
 }
 
 async function handleStart(message, db) {
@@ -186,7 +191,7 @@ async function handleStart(message, db) {
   );
 }
 
-async function handleText(message, db) {
+async function handleText(message, db, emailOctopus) {
   const userId = String(message.from.id);
   const record = await db.getUser(userId);
 
@@ -208,9 +213,17 @@ async function handleText(message, db) {
     updated_at: nowIso()
   });
 
+  const syncResult = await syncToEmailOctopus(emailOctopus, {
+    email,
+    firstName: record.first_name,
+    lastName: record.last_name
+  });
+
   await sendMessage(
     message.chat.id,
-    "Thanks. Your email has been saved. Send /start anytime if you want to update it."
+    syncResult.ok
+      ? "Thanks. Your email has been saved. Send /start anytime if you want to update it."
+      : "Thanks. Your email was saved locally, but the mailing-list sync failed. Please try again in a moment."
   );
 }
 
@@ -320,6 +333,19 @@ async function ensureWebhookMode() {
     console.error("Could not set Telegram webhook:", error.message);
     throw error;
   }
+}
+
+async function syncToEmailOctopus(client, contact) {
+  if (!client) {
+    return { ok: true, skipped: true };
+  }
+
+  const result = await client.upsertContact(contact);
+  if (!result.ok) {
+    console.error("EmailOctopus sync failed:", result.error?.code || result.status || "UNKNOWN");
+  }
+
+  return result;
 }
 
 function loadEnvFile() {

@@ -42,9 +42,14 @@ DASHBOARD_TOKEN=replace-with-a-secret-token
 PUBLIC_BASE_URL=https://your-public-domain.example
 INIT_DATA_TTL_SECONDS=3600
 TELEGRAM_WEBHOOK_SECRET=replace-with-a-long-random-secret
+EMAILOCTOPUS_API_KEY=
+EMAILOCTOPUS_LIST_ID=
+EMAILOCTOPUS_STATUS=SUBSCRIBED
+EMAILOCTOPUS_TAGS=telegram,channel
 ```
 
 If `DATABASE_URL` is set, the app uses Postgres. If it is empty, it falls back to SQLite in `DATABASE_FILE`.
+If `EMAILOCTOPUS_API_KEY` and `EMAILOCTOPUS_LIST_ID` are set, successful signups are also pushed into your EmailOctopus list.
 
 4. Start the bot:
 
@@ -105,6 +110,14 @@ That `channel` payload is stored as `source` in the database, so you can tell wh
 - The bot only shows the Web App button when `PUBLIC_BASE_URL` is set.
 - For real Telegram use, the URL must be publicly reachable over HTTPS.
 - The plain text email flow still works as a fallback.
+
+## EmailOctopus
+
+- The bot can sync captured emails directly into an existing EmailOctopus list.
+- Set `EMAILOCTOPUS_API_KEY` and `EMAILOCTOPUS_LIST_ID` to enable it.
+- `EMAILOCTOPUS_STATUS` defaults to `SUBSCRIBED`.
+- `EMAILOCTOPUS_TAGS` accepts comma-separated tags such as `telegram,channel`.
+- Existing contacts are updated using EmailOctopus's list contact update endpoint keyed by the MD5 hash of the lowercase email address.
 - Server-side validation now uses `Telegram.WebApp.initData`, not `initDataUnsafe`.
 - `INIT_DATA_TTL_SECONDS` controls how long Telegram auth data stays valid.
 

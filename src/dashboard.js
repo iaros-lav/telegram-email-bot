@@ -13,7 +13,8 @@ export function startDashboard({
   exportDir,
   initDataTtlSeconds,
   telegramWebhookPath,
-  onTelegramUpdate
+  onTelegramUpdate,
+  onEmailCaptured
 }) {
   const server = createServer((request, response) => {
     void handleRequest(request, response, {
@@ -23,7 +24,8 @@ export function startDashboard({
       exportDir,
       initDataTtlSeconds,
       telegramWebhookPath,
-      onTelegramUpdate
+      onTelegramUpdate,
+      onEmailCaptured
     });
   });
 
@@ -41,7 +43,16 @@ export function startDashboard({
 async function handleRequest(
   request,
   response,
-  { db, botToken, token, exportDir, initDataTtlSeconds, telegramWebhookPath, onTelegramUpdate }
+  {
+    db,
+    botToken,
+    token,
+    exportDir,
+    initDataTtlSeconds,
+    telegramWebhookPath,
+    onTelegramUpdate,
+    onEmailCaptured
+  }
 ) {
   try {
     const requestUrl = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
@@ -92,7 +103,7 @@ async function handleRequest(
     }
 
     if (request.method === "POST" && normalizedPath === "/api/mini-app/submit") {
-      await handleMiniAppSubmit(request, response, db, botToken, initDataTtlSeconds);
+      await handleMiniAppSubmit(request, response, db, botToken, initDataTtlSeconds, onEmailCaptured);
       return;
     }
 
@@ -513,7 +524,7 @@ function displayName(user) {
   return [user.first_name, user.last_name].filter(Boolean).join(" ");
 }
 
-async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlSeconds) {
+async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlSeconds, onEmailCaptured) {
   try {
     const payload = await readJsonBody(request);
     const email = String(payload.email || "").trim().toLowerCase();
@@ -544,6 +555,17 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
       created_at: existing?.created_at || now,
       updated_at: now
     });
+
+    const syncResult = await onEmailCaptured({
+      email,
+      firstName: String(user.first_name || existing?.first_name || ""),
+      lastName: String(user.last_name || existing?.last_name || "")
+    });
+
+    if (!syncResult.ok) {
+      respondJson(response, 502, { error: "Email saved locally, but mailing-list sync failed." });
+      return;
+    }
 
     respondJson(response, 200, { ok: true });
   } catch (error) {
