@@ -55,6 +55,7 @@ async function main() {
 
 async function startBot(db) {
   console.log("Bot is starting...");
+  await ensureLongPollingMode();
 
   while (true) {
     try {
@@ -70,6 +71,9 @@ async function startBot(db) {
       }
     } catch (error) {
       console.error("Polling error:", error.message);
+      if (error.message.includes("Telegram HTTP 409")) {
+        console.error("Telegram is refusing long polling because another bot session or webhook is active for this token.");
+      }
       await sleep(3000);
     }
   }
@@ -277,6 +281,16 @@ async function api(method, payload) {
   }
 
   return data.result;
+}
+
+async function ensureLongPollingMode() {
+  try {
+    await api("deleteWebhook", {
+      drop_pending_updates: false
+    });
+  } catch (error) {
+    console.error("Could not clear webhook before long polling:", error.message);
+  }
 }
 
 function loadEnvFile() {
