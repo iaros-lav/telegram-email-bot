@@ -6,7 +6,7 @@ export function createEmailOctopusClient() {
   const apiKey = process.env.EMAILOCTOPUS_API_KEY || "";
   const listId = process.env.EMAILOCTOPUS_LIST_ID || "";
   const status = process.env.EMAILOCTOPUS_STATUS || "SUBSCRIBED";
-  const tags = parseTags(process.env.EMAILOCTOPUS_TAGS || "");
+  const countryFieldTag = process.env.EMAILOCTOPUS_COUNTRY_FIELD || "Country";
 
   if (!apiKey || !listId) {
     return null;
@@ -14,7 +14,7 @@ export function createEmailOctopusClient() {
 
   return {
     async upsertContact({ email, firstName, lastName, country, source, method }) {
-      const finalTags = buildTags(tags, { source, method, country });
+      const finalTags = buildTags();
       const payload = {
         api_key: apiKey,
         email_address: email,
@@ -28,6 +28,9 @@ export function createEmailOctopusClient() {
       }
       if (lastName) {
         fields.LastName = lastName;
+      }
+      if (country) {
+        fields[countryFieldTag] = country;
       }
       if (Object.keys(fields).length > 0) {
         payload.fields = fields;
@@ -67,7 +70,7 @@ export function createEmailOctopusClient() {
     },
     async unsubscribeContact({ email, firstName, lastName, country, source, method }) {
       const memberId = crypto.createHash("md5").update(email).digest("hex");
-      const finalTags = buildTags(tags, { source, method, country });
+      const finalTags = buildTags();
       const payload = {
         api_key: apiKey,
         email_address: email,
@@ -81,6 +84,9 @@ export function createEmailOctopusClient() {
       }
       if (lastName) {
         fields.LastName = lastName;
+      }
+      if (country) {
+        fields[countryFieldTag] = country;
       }
       if (Object.keys(fields).length > 0) {
         payload.fields = fields;
@@ -128,38 +134,12 @@ async function emailOctopusFetch(endpoint, { method, body }) {
   };
 }
 
-function parseTags(value) {
-  return value
-    .split(",")
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-}
-
 function toTagUpdateMap(tags) {
   return Object.fromEntries(tags.map((tag) => [tag, true]));
 }
 
-function buildTags(baseTags, { source, method, country }) {
-  const dynamicTags = [];
-  const safeSource = sanitizeTag(source);
-  const safeMethod = sanitizeTag(method);
-
-  if (safeSource) {
-    dynamicTags.push(`source-${safeSource}`);
-  }
-  if (safeMethod) {
-    dynamicTags.push(`method-${safeMethod}`);
-  }
-
-  return [...new Set([...baseTags, ...dynamicTags])];
-}
-
-function sanitizeTag(value) {
-  return String(value)
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9_-]+/g, "-")
-    .replaceAll(/-+/g, "-")
-    .replaceAll(/^-|-$/g, "");
+function buildTags() {
+  return ["telegram"];
 }
 
 function withFriendlyError(result) {
