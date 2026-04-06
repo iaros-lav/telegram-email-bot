@@ -4,11 +4,11 @@ export function createCopy({ privacyUrl = "", newsletterScheduleText = "След
     newsletterScheduleText,
     startLines(hasMiniApp) {
       const lines = [
-        "Спасибо, что вы здесь.",
+        "Здесь можно Подписаться на новости Немного Нервно,.",
         "",
-        "Я могу сохранить один email и страну для новостей канала.",
+        "чтобы не потерять друг друга на этой большой и чужой Земле просто отправьте ваш email.",
         "",
-        "Сначала просто отправьте ваш email."
+        "Я сохраню его, чтобы делиться важными постами, объявлениями и редкими письмами рассылки. Страна нужна для сегментации аудитории и более понятной аналитики, но её можно не указывать.",
       ];
 
       if (hasMiniApp) {
@@ -34,7 +34,7 @@ export function createCopy({ privacyUrl = "", newsletterScheduleText = "След
     miniApp: {
       pageTitle: "Подписка по email",
       title: "Оставайтесь на связи",
-      description: "Оставьте email и страну, чтобы получать обновления этого Telegram-канала. Позже вы сможете изменить данные, снова открыв эту форму или отправив боту /start.",
+      description: "Оставьте email и страну, чтобы не потерять друг друга на этой большой и чужой Земле. Позже вы сможете изменить данные, снова открыв эту форму или отправив боту /start.",
       emailLabel: "Email",
       emailPlaceholder: "name@example.com",
       countryLabel: "Страна",
@@ -54,11 +54,11 @@ export function createCopy({ privacyUrl = "", newsletterScheduleText = "След
       summaryLines: [
         "Я храню ваш Telegram ID, базовые поля профиля, источник подписки, текущий email и указанную страну.",
         "Эти данные используются для управления email-подписками канала.",
-        "Если включён EmailOctopus, ваш email также отправляется туда для доставки писем.",
+        "Включён EmailOctopus, ваш email также отправляется туда для доставки писем.",
         "Удалить локальные данные можно в любой момент командой /delete."
       ],
       pageIntro: "Этот бот сохраняет Telegram ID, базовые публичные поля профиля, источник подписки, один текущий email и указанную страну, чтобы владелец канала мог управлять подписками на рассылку.",
-      pageEmailOctopus: "Если включён EmailOctopus, отправленный email также передаётся туда для доставки писем.",
+      pageEmailOctopus: "Включён EmailOctopus, отправленный email также передаётся туда для доставки писем.",
       pageBullets: [
         "Email используется для новостей канала, объявлений и редких писем рассылки.",
         "Страна нужна для сегментации аудитории и более понятной аналитики.",
@@ -82,10 +82,10 @@ export function createCopy({ privacyUrl = "", newsletterScheduleText = "След
     },
     signupSuccess(country = "") {
       if (country) {
-        return `Готово. Я сохранил ваш email и страну: ${country}. ${newsletterScheduleText} Если захотите обновить данные позже, отправьте /start.`;
+        return `Готово.: ${country}. ${newsletterScheduleText} Если захотите обновить данные позже, отправьте /start.`;
       }
 
-      return `Готово. Я сохранил ваш email. ${newsletterScheduleText} Если захотите позже добавить или изменить страну, отправьте /start.`;
+      return `Готово. ${newsletterScheduleText} Если захотите позже добавить или изменить страну, отправьте /start.`;
     }
   };
 }
