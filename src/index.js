@@ -6,6 +6,7 @@ import { createStore } from "./db.js";
 import { startDashboard } from "./dashboard.js";
 import { createEmailOctopusClient } from "./emailoctopus.js";
 import { createRateLimiter } from "./rate-limit.js";
+import { createCopy } from "./copy.js";
 
 loadEnvFile();
 
@@ -37,6 +38,10 @@ if (!BOT_TOKEN) {
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const COUNTRY_REGEX = /^[A-Za-z][A-Za-z .,'-]{1,79}$/;
+const copy = createCopy({
+  privacyUrl: PRIVACY_URL,
+  newsletterScheduleText: NEWSLETTER_SCHEDULE_TEXT
+});
 const chatRateLimiter = createRateLimiter({
   windowMs: CHAT_RATE_LIMIT_WINDOW_SECONDS * 1000,
   maxHits: CHAT_RATE_LIMIT_MAX_HITS
@@ -229,31 +234,7 @@ async function handleStart(message, db, startPayload = "") {
     created_at: record?.created_at || now
   });
 
-  const lines = [
-    "Спасибо, что вы здесь.",
-    "",
-    "Я могу сохранить один email и страну для новостей канала.",
-    "",
-    "Сначала просто отправьте ваш email."
-  ];
-
-  if (PUBLIC_BASE_URL) {
-    lines.push("", "Если удобнее, нажмите кнопку ниже и заполните красивую форму.");
-  }
-
-  lines.push(
-    "",
-    "После email я попрошу указать страну.",
-    "Если страну не хотите указывать, этот шаг можно будет пропустить командой /skip.",
-    "",
-    "Что вы получите: важные посты, объявления и редкие письма рассылки.",
-    "",
-    "Удалить свои данные можно командой /delete."
-  );
-
-  if (PRIVACY_URL) {
-    lines.push(`Политика конфиденциальности: ${PRIVACY_URL}`);
-  }
+  const lines = copy.startLines(Boolean(PUBLIC_BASE_URL));
 
   await sendMessage(
     message.chat.id,
@@ -358,9 +339,7 @@ async function completeSignup(message, db, emailOctopus, record, country, method
   if (syncResult.ok) {
     await sendMessage(
       chatId,
-      updated.country
-        ? `Готово. Я сохранил ваш email и страну: ${updated.country}. ${NEWSLETTER_SCHEDULE_TEXT} Если захотите обновить данные позже, отправьте /start.`
-        : `Готово. Я сохранил ваш email. ${NEWSLETTER_SCHEDULE_TEXT} Если захотите позже добавить или изменить страну, отправьте /start.`
+      copy.signupSuccess(updated.country)
     );
     return;
   }
@@ -372,17 +351,7 @@ async function completeSignup(message, db, emailOctopus, record, country, method
 }
 
 async function promptCountry(chatId, currentCountry = "") {
-  const lines = [
-    "Теперь укажите вашу страну.",
-    "Пожалуйста, пишите только на английском.",
-    "Например: Russia, Ukraine, Kazakhstan, Germany."
-  ];
-
-  if (currentCountry) {
-    lines.push(`Сейчас у вас сохранена страна: ${currentCountry}.`);
-  }
-
-  lines.push("Если не хотите указывать страну или хотите оставить текущую, отправьте /skip.");
+  const lines = copy.countryPrompt(currentCountry);
   await sendMessage(chatId, lines.join("\n"));
 }
 
@@ -513,10 +482,7 @@ async function handleDelete(message, db, emailOctopus) {
 async function handlePrivacy(chatId) {
   const lines = [
     "Кратко о конфиденциальности:",
-    "Я храню ваш Telegram ID, базовые поля профиля, источник подписки, текущий email и указанную страну.",
-    "Эти данные используются для управления email-подписками канала.",
-    "Если включён EmailOctopus, ваш email также отправляется туда для доставки писем.",
-    "Удалить локальные данные можно в любой момент командой /delete."
+    ...copy.privacy.summaryLines
   ];
 
   if (PRIVACY_URL) {

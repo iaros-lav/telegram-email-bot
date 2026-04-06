@@ -2,10 +2,16 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { createRateLimiter } from "./rate-limit.js";
+import { createCopy } from "./copy.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const COUNTRY_REGEX = /^[A-Za-z][A-Za-z .,'-]{1,79}$/;
 const NEWSLETTER_SCHEDULE_TEXT = process.env.NEWSLETTER_SCHEDULE_TEXT || "Следующее письмо обычно приходит по пятницам.";
+const PRIVACY_URL = process.env.PUBLIC_BASE_URL ? `${String(process.env.PUBLIC_BASE_URL).replace(/\/$/, "")}/privacy` : "";
+const copy = createCopy({
+  privacyUrl: PRIVACY_URL,
+  newsletterScheduleText: NEWSLETTER_SCHEDULE_TEXT
+});
 const MINI_APP_RATE_LIMIT_WINDOW_SECONDS = Number(process.env.RATE_LIMIT_SUBMISSION_WINDOW_SECONDS || 600);
 const MINI_APP_RATE_LIMIT_MAX_HITS = Number(process.env.RATE_LIMIT_MAX_SUBMISSIONS || 5);
 const miniAppSubmitRateLimiter = createRateLimiter({
@@ -371,7 +377,7 @@ function renderMiniApp() {
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Подписка по email</title>
+    <title>${escapeHtml(copy.miniApp.pageTitle)}</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
       :root {
@@ -466,23 +472,23 @@ function renderMiniApp() {
   <body>
     <main>
       <section class="panel">
-        <h1>Оставайтесь на связи</h1>
-        <p>Оставьте email и страну, чтобы получать обновления этого Telegram-канала. Позже вы сможете изменить данные, снова открыв эту форму или отправив боту <strong>/start</strong>.</p>
+        <h1>${escapeHtml(copy.miniApp.title)}</h1>
+        <p>${escapeHtml(copy.miniApp.description)}</p>
         <form id="signup-form">
-          <label for="email">Email</label>
-          <input id="email" name="email" type="email" autocomplete="email" placeholder="name@example.com" required>
-          <label for="country">Страна</label>
-          <input id="country" name="country" type="text" autocomplete="country-name" placeholder="Например, Russia">
+          <label for="email">${escapeHtml(copy.miniApp.emailLabel)}</label>
+          <input id="email" name="email" type="email" autocomplete="email" placeholder="${escapeHtml(copy.miniApp.emailPlaceholder)}" required>
+          <label for="country">${escapeHtml(copy.miniApp.countryLabel)}</label>
+          <input id="country" name="country" type="text" autocomplete="country-name" placeholder="${escapeHtml(copy.miniApp.countryPlaceholder)}">
           <label style="display:flex;gap:10px;align-items:flex-start;margin:4px 0 14px;">
             <input id="consent" name="consent" type="checkbox" required style="width:auto;margin:3px 0 0;">
-            <span>Я согласен(на), что владелец канала может хранить мой email и страну для новостей и связи.</span>
+            <span>${escapeHtml(copy.miniApp.consentLabel)}</span>
           </label>
-          <button type="submit">Сохранить данные</button>
+          <button type="submit">${escapeHtml(copy.miniApp.submitButton)}</button>
         </form>
-        <p id="note" class="note">Отправляя форму, вы соглашаетесь, что владелец канала может хранить ваш email и страну для связи и рассылки новостей.</p>
+        <p id="note" class="note">${escapeHtml(copy.miniApp.note)}</p>
         <section id="success-panel" class="success-panel">
-          <strong>Готово, вы в списке.</strong>
-          <p>${escapeHtml(NEWSLETTER_SCHEDULE_TEXT)} Окно можно закрыть. Если захотите удалить данные позже, отправьте боту <strong>/delete</strong>.</p>
+          <strong>${escapeHtml(copy.miniApp.successTitle)}</strong>
+          <p>${escapeHtml(copy.miniApp.successDescription)}</p>
         </section>
         <div id="message" class="message"></div>
       </section>
@@ -511,7 +517,7 @@ function renderMiniApp() {
         const initData = webApp?.initData || "";
 
         if (!initData) {
-          showMessage("Эту Mini App нужно открывать прямо из Telegram, чтобы бот понял, кто отправляет форму.", "error");
+          showMessage(${JSON.stringify(copy.miniApp.openFromTelegramError)}, "error");
           return;
         }
 
@@ -531,12 +537,12 @@ function renderMiniApp() {
 
           const payload = await response.json();
           if (!response.ok) {
-            throw new Error(payload.error || "Не удалось сохранить данные.");
+            throw new Error(payload.error || ${JSON.stringify(copy.miniApp.genericSaveError)});
           }
 
           showSuccess();
           if (webApp) {
-            webApp.MainButton.setText("Закрыть");
+            webApp.MainButton.setText(${JSON.stringify(copy.miniApp.closeButton)});
             webApp.MainButton.show();
             webApp.onEvent("mainButtonClicked", () => webApp.close());
           }
@@ -567,7 +573,7 @@ function renderPrivacyPage() {
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Политика конфиденциальности</title>
+    <title>${escapeHtml(copy.privacy.title)}</title>
     <style>
       :root {
         --bg: #fbf6ef;
@@ -611,14 +617,11 @@ function renderPrivacyPage() {
   <body>
     <main>
       <article>
-        <h1>Конфиденциальность</h1>
-        <p>Этот бот сохраняет Telegram ID, базовые публичные поля профиля, источник подписки, один текущий email и указанную страну, чтобы владелец канала мог управлять подписками на рассылку.</p>
-        <p>Если включён EmailOctopus, отправленный email также передаётся туда для доставки писем.</p>
+        <h1>${escapeHtml(copy.privacy.title)}</h1>
+        <p>${escapeHtml(copy.privacy.pageIntro)}</p>
+        <p>${escapeHtml(copy.privacy.pageEmailOctopus)}</p>
         <ul>
-          <li>Email используется для новостей канала, объявлений и редких писем рассылки.</li>
-          <li>Страна нужна для сегментации аудитории и более понятной аналитики.</li>
-          <li>Локальные данные можно удалить в любой момент командой <strong>/delete</strong>.</li>
-          <li>Изменить email или страну можно в любой момент, отправив <strong>/start</strong> заново.</li>
+          ${copy.privacy.pageBullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("")}
         </ul>
       </article>
     </main>
@@ -696,7 +699,7 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
     }
 
     if (!consent) {
-      respondJson(response, 400, { error: "Нужно подтвердить согласие на хранение данных перед отправкой формы." });
+      respondJson(response, 400, { error: copy.miniApp.consentRequiredError });
       return;
     }
 
