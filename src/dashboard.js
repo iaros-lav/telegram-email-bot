@@ -479,10 +479,6 @@ function renderMiniApp() {
           <input id="email" name="email" type="email" autocomplete="email" placeholder="${escapeHtml(copy.miniApp.emailPlaceholder)}" required>
           <label for="country">${escapeHtml(copy.miniApp.countryLabel)}</label>
           <input id="country" name="country" type="text" autocomplete="country-name" placeholder="${escapeHtml(copy.miniApp.countryPlaceholder)}">
-          <label style="display:flex;gap:10px;align-items:flex-start;margin:4px 0 14px;">
-            <input id="consent" name="consent" type="checkbox" required style="width:auto;margin:3px 0 0;">
-            <span>${escapeHtml(copy.miniApp.consentLabel)}</span>
-          </label>
           <button type="submit">${escapeHtml(copy.miniApp.submitButton)}</button>
         </form>
         <p id="note" class="note">${escapeHtml(copy.miniApp.note)}</p>
@@ -506,14 +502,11 @@ function renderMiniApp() {
       const successPanel = document.getElementById("success-panel");
       const emailInput = document.getElementById("email");
       const countryInput = document.getElementById("country");
-      const consentInput = document.getElementById("consent");
-
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
 
         const email = emailInput.value.trim();
         const country = countryInput.value.trim();
-        const consent = consentInput.checked;
         const initData = webApp?.initData || "";
 
         if (!initData) {
@@ -528,7 +521,6 @@ function renderMiniApp() {
             body: JSON.stringify({
               email,
               country,
-              consent,
               init_data: initData,
               user: webApp?.initDataUnsafe?.user || null,
               source: webApp?.initDataUnsafe?.start_param || null
@@ -678,7 +670,6 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
     const payload = await readJsonBody(request);
     const email = String(payload.email || "").trim().toLowerCase();
     const country = normalizeCountry(payload.country || "");
-    const consent = payload.consent === true;
     const user = payload.user || null;
 
     if (!user?.id) {
@@ -695,11 +686,6 @@ async function handleMiniAppSubmit(request, response, db, botToken, initDataTtlS
 
     if (!EMAIL_REGEX.test(email)) {
       respondJson(response, 400, { error: "Пожалуйста, введите корректный email." });
-      return;
-    }
-
-    if (!consent) {
-      respondJson(response, 400, { error: copy.miniApp.consentRequiredError });
       return;
     }
 
