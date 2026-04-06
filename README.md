@@ -26,7 +26,6 @@ Bots cannot automatically message every subscriber in a channel or see a full su
 - Admin Telegram alerts for new or updated signups
 - Simple rate limiting for chat and Mini App submissions
 - EmailOctopus sync for successful signups
-- Google Sheets backup sync for signup/delete events
 - Admin-only `/export` command that points you to the dashboard
 - No external npm dependencies
 
@@ -60,10 +59,6 @@ EMAILOCTOPUS_API_KEY=
 EMAILOCTOPUS_LIST_ID=
 EMAILOCTOPUS_STATUS=SUBSCRIBED
 EMAILOCTOPUS_COUNTRY_FIELD=Country
-GOOGLE_SHEETS_SPREADSHEET_ID=
-GOOGLE_SHEETS_SHEET_NAME=Signups
-GOOGLE_SHEETS_SERVICE_ACCOUNT_EMAIL=
-GOOGLE_SHEETS_PRIVATE_KEY=
 ```
 
 If `DATABASE_URL` is set, the app uses Postgres. If it is empty, it falls back to SQLite in `DATABASE_FILE`.
@@ -151,17 +146,6 @@ That `channel` payload is stored as `source` in the database, so you can tell wh
 - Country is sent as an EmailOctopus contact field using `EMAILOCTOPUS_COUNTRY_FIELD` (default: `Country`).
 - `/delete` attempts to unsubscribe the stored email from EmailOctopus before removing local data.
 
-## Google Sheets Backup
-
-- The bot can append signup and delete events to Google Sheets as a best-effort backup.
-- Set `GOOGLE_SHEETS_SPREADSHEET_ID`, `GOOGLE_SHEETS_SHEET_NAME`, `GOOGLE_SHEETS_SERVICE_ACCOUNT_EMAIL`, and `GOOGLE_SHEETS_PRIVATE_KEY`.
-- The service account needs edit access to the target spreadsheet.
-- Rows are appended in this order:
-
-```text
-timestamp,event_type,telegram_id,username,first_name,last_name,email,country,source,method
-```
-
 ## Privacy
 
 - A public privacy page is available at `/privacy`.
@@ -226,5 +210,4 @@ It also includes a Render Blueprint at [`render.yaml`](/Users/yarik/Code/telegra
 - Postgres support uses the `pg` package, so run `npm install` before starting the app after pulling these changes.
 - Data stays local on your machine unless you deploy it elsewhere.
 - Add a proper privacy notice if you plan to collect emails from the public.
-- Google Sheets backup uses a Google service account and the Sheets API.
 - Railway config-as-code currently covers deployment settings for one service; the Postgres service itself is still created in Railway, not from `railway.json`.

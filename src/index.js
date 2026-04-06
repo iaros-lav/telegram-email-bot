@@ -5,7 +5,6 @@ import process from "node:process";
 import { createStore } from "./db.js";
 import { startDashboard } from "./dashboard.js";
 import { createEmailOctopusClient } from "./emailoctopus.js";
-import { createGoogleSheetsClient } from "./google-sheets.js";
 import { createRateLimiter } from "./rate-limit.js";
 
 loadEnvFile();
@@ -55,7 +54,6 @@ async function main() {
     databaseUrl: DATABASE_URL
   });
   const emailOctopus = createEmailOctopusClient();
-  const googleSheets = createGoogleSheetsClient();
 
   if (DASHBOARD_ENABLED) {
     startDashboard({
@@ -68,10 +66,10 @@ async function main() {
       initDataTtlSeconds: INIT_DATA_TTL_SECONDS,
       telegramWebhookPath: TELEGRAM_WEBHOOK_PATH,
       onTelegramUpdate: async (update) => {
-        await handleUpdate(update, db, emailOctopus, googleSheets);
+        await handleUpdate(update, db, emailOctopus);
       },
       onEmailCaptured: async (contact) => {
-        const result = await syncSignupServices(emailOctopus, googleSheets, contact);
+        const result = await syncToEmailOctopus(emailOctopus, contact);
         await notifyAdminAboutSignup({
           telegram_id: contact.telegramId,
           username: contact.username,
@@ -86,10 +84,10 @@ async function main() {
     });
   }
 
-  await startBot(db, emailOctopus, googleSheets);
+  await startBot(db, emailOctopus);
 }
 
-async function startBot(db, emailOctopus, googleSheets) {
+async function startBot(db, emailOctopus) {
   console.log("Bot is starting...");
 
   if (PUBLIC_BASE_URL) {
@@ -110,7 +108,7 @@ async function startBot(db, emailOctopus, googleSheets) {
 
       for (const update of updates) {
         lastUpdateId = update.update_id;
-        await handleUpdate(update, db, emailOctopus, googleSheets);
+        await handleUpdate(update, db, emailOctopus);
       }
     } catch (error) {
       console.error("Polling error:", error.message);
@@ -122,7 +120,7 @@ async function startBot(db, emailOctopus, googleSheets) {
   }
 }
 
-async function handleUpdate(update, db, emailOctopus, googleSheets) {
+async function handleUpdate(update, db, emailOctopus) {
   const message = update.message;
   if (!message || !message.chat) {
     return;
@@ -180,7 +178,7 @@ async function handleUpdate(update, db, emailOctopus, googleSheets) {
   }
 
   if (command?.name === "/delete") {
-    await handleDelete(message, db, emailOctopus, googleSheets);
+    await handleDelete(message, db, emailOctopus);
     return;
   }
 
@@ -200,7 +198,7 @@ async function handleUpdate(update, db, emailOctopus, googleSheets) {
   }
 
   if (command?.name === "/skip") {
-    await handleSkip(message, db, emailOctopus, googleSheets);
+    await handleSkip(message, db, emailOctopus);
     return;
   }
 
@@ -209,7 +207,7 @@ async function handleUpdate(update, db, emailOctopus, googleSheets) {
     return;
   }
 
-  await handleText(message, db, emailOctopus, googleSheets);
+  await handleText(message, db, emailOctopus);
 }
 
 async function handleStart(message, db, startPayload = "") {
@@ -273,7 +271,7 @@ async function handleStart(message, db, startPayload = "") {
   );
 }
 
-async function handleText(message, db, emailOctopus, googleSheets) {
+async function handleText(message, db, emailOctopus) {
   const userId = String(message.from.id);
   const record = await db.getUser(userId);
 
@@ -310,14 +308,14 @@ async function handleText(message, db, emailOctopus, googleSheets) {
       return;
     }
 
-    await completeSignup(message, db, emailOctopus, googleSheets, record, country, "chat");
+    await completeSignup(message, db, emailOctopus, record, country, "chat");
     return;
   }
 
   await sendMessage(message.chat.id, "Если хотите обновить email или страну, отправьте /start.");
 }
 
-async function handleSkip(message, db, emailOctopus, googleSheets) {
+async function handleSkip(message, db, emailOctopus) {
   const userId = String(message.from.id);
   const record = await db.getUser(userId);
 
@@ -326,10 +324,10 @@ async function handleSkip(message, db, emailOctopus, googleSheets) {
     return;
   }
 
-  await completeSignup(message, db, emailOctopus, googleSheets, record, record.country || "", "chat");
+  await completeSignup(message, db, emailOctopus, record, record.country || "", "chat");
 }
 
-async function completeSignup(message, db, emailOctopus, googleSheets, record, country, method) {
+async function completeSignup(message, db, emailOctopus, record, country, method) {
   const chatId = message.chat.id;
   if (!record?.email) {
     await sendMessage(chatId, "Не удалось завершить сохранение. Пожалуйста, отправьте /start и попробуйте ещё раз.");
@@ -354,7 +352,7 @@ async function completeSignup(message, db, emailOctopus, googleSheets, record, c
     source: updated.source,
     method
   };
-  const syncResult = await syncSignupServices(emailOctopus, googleSheets, syncPayload);
+  const syncResult = await syncToEmailOctopus(emailOctopus, syncPayload);
   await notifyAdminAboutSignup(updated, method, syncResult);
 
   if (syncResult.ok) {
@@ -479,7 +477,7 @@ async function handleMyData(message, db) {
   await sendMessage(message.chat.id, lines.join("\n"));
 }
 
-async function handleDelete(message, db, emailOctopus, googleSheets) {
+async function handleDelete(message, db, emailOctopus) {
   const userId = String(message.from.id);
   const record = await db.getUser(userId);
 
@@ -501,8 +499,6 @@ async function handleDelete(message, db, emailOctopus, googleSheets) {
       method: "chat"
     });
   }
-
-  await appendDeletionToGoogleSheets(googleSheets, record);
 
   await db.deleteUser(userId);
 
@@ -703,12 +699,6 @@ async function syncToEmailOctopus(client, contact) {
   return result;
 }
 
-async function syncSignupServices(emailOctopusClient, googleSheetsClient, contact) {
-  const emailOctopusResult = await syncToEmailOctopus(emailOctopusClient, contact);
-  await appendSignupToGoogleSheets(googleSheetsClient, contact);
-  return emailOctopusResult;
-}
-
 async function unsubscribeFromEmailOctopus(client, contact) {
   if (!client) {
     return { ok: true, skipped: true };
@@ -720,66 +710,6 @@ async function unsubscribeFromEmailOctopus(client, contact) {
   }
 
   return result;
-}
-
-async function appendSignupToGoogleSheets(client, contact) {
-  if (!client) {
-    return { ok: true, skipped: true };
-  }
-
-  try {
-    const result = await client.appendEvent({
-      timestamp: nowIso(),
-      eventType: "signup",
-      telegramId: contact.telegramId,
-      username: contact.username,
-      firstName: contact.firstName,
-      lastName: contact.lastName,
-      email: contact.email,
-      country: contact.country,
-      source: contact.source,
-      method: contact.method
-    });
-
-    if (!result.ok) {
-      console.error("Google Sheets signup backup failed:", result.status || "UNKNOWN");
-    }
-
-    return result;
-  } catch (error) {
-    console.error("Google Sheets signup backup failed:", error.message);
-    return { ok: false, error };
-  }
-}
-
-async function appendDeletionToGoogleSheets(client, record) {
-  if (!client || !record?.email) {
-    return { ok: true, skipped: true };
-  }
-
-  try {
-    const result = await client.appendEvent({
-      timestamp: nowIso(),
-      eventType: "delete",
-      telegramId: record.telegram_id,
-      username: record.username,
-      firstName: record.first_name,
-      lastName: record.last_name,
-      email: record.email,
-      country: record.country,
-      source: record.source,
-      method: "chat"
-    });
-
-    if (!result.ok) {
-      console.error("Google Sheets delete backup failed:", result.status || "UNKNOWN");
-    }
-
-    return result;
-  } catch (error) {
-    console.error("Google Sheets delete backup failed:", error.message);
-    return { ok: false, error };
-  }
 }
 
 async function notifyAdminAboutSignup(record, method, syncResult) {
